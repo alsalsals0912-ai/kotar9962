@@ -43,7 +43,6 @@ SCOPES = [
 
 @st.cache_resource
 def get_gspread_client():
-    # Streamlit Secrets에 저장된 JSON을 읽어와서 인증합니다.
     creds_dict = json.loads(st.secrets["google_json"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
@@ -63,7 +62,6 @@ def load_precedents_df():
     if not records:
         return pd.DataFrame(columns=cols)
     df = pd.DataFrame(records)
-    # 데이터 타입 안정화
     if 'id' in df.columns:
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
     if 'read_count' in df.columns:
@@ -74,17 +72,14 @@ def load_precedents_df():
 def save_precedents_df(df):
     ws = get_worksheet("precedents")
     ws.clear()
-    
-    # NaN 및 float 형태(.0) 방지 처리
     out_df = df.copy()
     out_df.fillna("", inplace=True)
     for col in out_df.columns:
         out_df[col] = out_df[col].apply(lambda x: int(x) if isinstance(x, float) and x.is_integer() else x)
         out_df[col] = out_df[col].astype(str)
-        
     data = [out_df.columns.values.tolist()] + out_df.values.tolist()
     ws.update(values=data, range_name="A1")
-    load_precedents_df.clear() # 캐시 초기화 (수정 즉시 반영)
+    load_precedents_df.clear()
 
 # 📌 카테고리 데이터 불러오기
 @st.cache_data(ttl=60)
@@ -107,12 +102,9 @@ def add_category(main_cat, mid_cat, sub_cat=""):
     ws = get_worksheet("categories")
     records = ws.get_all_records()
     new_id = 1 if not records else max([int(r.get("id", 0)) for r in records]) + 1
-    
-    # 중복 체크
     for r in records:
         if r.get("main_cat") == main_cat and r.get("mid_cat") == mid_cat and r.get("sub_cat") == sub_cat:
             return False
-            
     ws.append_row([new_id, main_cat, mid_cat, sub_cat])
     load_categories.clear()
     return True
@@ -122,18 +114,15 @@ def delete_category(main_cat, mid_cat, sub_cat=None):
     records = ws.get_all_records()
     if not records: return
     df = pd.DataFrame(records)
-    
     if sub_cat is None:
         df = df[~((df['main_cat'] == main_cat) & (df['mid_cat'] == mid_cat))]
     else:
         df = df[~((df['main_cat'] == main_cat) & (df['mid_cat'] == mid_cat) & (df['sub_cat'] == sub_cat))]
-        
     ws.clear()
     out_df = df.fillna("").astype(str)
     data = [out_df.columns.values.tolist()] + out_df.values.tolist()
     ws.update(values=data, range_name="A1")
     load_categories.clear()
-
 
 # --- 유틸리티 함수 ---
 def sort_exams_desc(exam_text):
@@ -146,10 +135,9 @@ def sort_exams_desc(exam_text):
     sorted_lines = sorted(lines, key=get_year, reverse=True)
     return "\n".join(sorted_lines)
 
-# 데이터 로드
 categories = load_categories()
 
-# --- 커스텀 CSS ---
+# --- 커스텀 CSS (불필요한 버튼 해킹 코드 제거) ---
 st.markdown("""
     <style>
     div[data-testid="metric-container"] {
@@ -169,31 +157,6 @@ st.markdown("""
     }
     .stButton > button {
         height: 40px;
-    }
-    div[data-testid="element-container"]:has(.metric-btn-marker) {
-        display: none; 
-    }
-    div[data-testid="element-container"]:has(.metric-btn-marker) + div[data-testid="element-container"] button {
-        background-color: #f8f9fa;
-        border: 1px solid #e9ecef;
-        padding: 15px 15px 5px 15px;
-        border-radius: 10px;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
-        height: 104px; 
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: flex-start;
-        text-align: left;
-        transition: all 0.2s ease;
-    }
-    div[data-testid="element-container"]:has(.metric-btn-marker) + div[data-testid="element-container"] button:hover {
-        border-color: #ff4b4b; 
-        box-shadow: 2px 2px 8px rgba(0,0,0,0.1);
-    }
-    div[data-testid="element-container"]:has(.metric-btn-marker) + div[data-testid="element-container"] button p {
-        margin: 0;
-        color: #555;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -232,7 +195,7 @@ def get_stats():
 
 # --- 1. 홈 (대시보드) ---
 if menu == "📊 홈 (대시보드)":
-    st.title("Hello, 예비 7급 공무원님 👋")
+    st.title("Hello, 예비 공무원님 👋")
     st.markdown("목표 달성을 위한 판례 회독을 시작해 보세요. 응원합니다!")
     st.write("")
     
@@ -244,12 +207,13 @@ if menu == "📊 홈 (대시보드)":
     with col2:
         st.metric("S 및 A+ 판례 (핵심)", f"{high_grade} 개", "우선 복습 권장")
     
+    # 📌 깔끔한 기본 숫자(Metric) 형태 복구 및 개별 이동 버튼 적용
     with col3:
-        st.markdown('<div class="metric-btn-marker"></div>', unsafe_allow_html=True)
-        st.button(f"🏛️ 헌법 판례  \n### {const_total} 개", on_click=change_menu, args=("🏛️ 헌법 판례집",), use_container_width=True)
+        st.metric("🏛️ 헌법 판례", f"{const_total} 개")
+        st.button("헌법 판례집 이동 ➡️", key="go_const", on_click=change_menu, args=("🏛️ 헌법 판례집",), use_container_width=True)
     with col4:
-        st.markdown('<div class="metric-btn-marker"></div>', unsafe_allow_html=True)
-        st.button(f"⚖️ 행정법 판례  \n### {admin_total} 개", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
+        st.metric("⚖️ 행정법 판례", f"{admin_total} 개")
+        st.button("행정법 판례집 이동 ➡️", key="go_admin", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
     
     st.write("---")
     
