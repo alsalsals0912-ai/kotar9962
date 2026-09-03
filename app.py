@@ -1,16 +1,16 @@
 import streamlit as st
-import sqlite3
 import datetime
 import pandas as pd
 import re
-from contextlib import contextmanager
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 
-# 🚨 Streamlit 화면 설정은 무조건 최상단에 위치해야 합니다.
+# 🚨 Streamlit 화면 설정 (최상단 고정)
 st.set_page_config(page_title="공무원 판례 대시보드", page_icon="⚖️", layout="wide")
 
 # --- 🔒 비밀번호 잠금 시스템 ---
 def check_password():
-    # 클라우드에 설정할 비밀번호를 가져옵니다. (클라우드 설정 전 로컬 테스트용 기본 비밀번호: '7777')
     CORRECT_PASSWORD = st.secrets.get("password", "7777")
     
     if "password_correct" not in st.session_state:
@@ -31,104 +31,127 @@ def check_password():
         return False
     return True
 
-# 비밀번호를 맞추기 전까지는 아래의 앱 코드가 실행되지 않고 멈춥니다.
 if not check_password():
     st.stop()
 
 
-# ==========================================
-# 아래부터는 기존 판례 대시보드 전체 코드입니다.
-# ==========================================
+# --- ☁️ 구글 스프레드시트 (Cloud DB) 연동 시스템 ---
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
-# --- 데이터베이스 설정 및 🚀 무한 로딩(Deadlock) 방지 시스템 ---
-DB_FILE = "law_precedents.db"
+@st.cache_resource
+def get_gspread_client():
+    # Streamlit Secrets에 저장된 JSON을 읽어와서 인증합니다.
+    creds_dict = json.loads(st.secrets["google_json"])
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return gspread.authorize(creds)
 
-@contextmanager
-def get_db():
-    conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False, isolation_level=None)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL;") 
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=30000;")
-        yield conn
-    finally:
-        conn.close() 
+def get_worksheet(sheet_name):
+    client = get_gspread_client()
+    url = st.secrets["sheet_url"]
+    doc = client.open_by_url(url)
+    return doc.worksheet(sheet_name)
 
-def init_db():
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS categories (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        main_cat TEXT,
-                        mid_cat TEXT,
-                        sub_cat TEXT,
-                        UNIQUE(main_cat, mid_cat, sub_cat)
-                    )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS precedents (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        main_cat TEXT,
-                        mid_cat TEXT,
-                        sub_cat TEXT,
-                        p_number TEXT,
-                        p_title TEXT,
-                        p_content TEXT,
-                        p_tags TEXT,
-                        reg_date TEXT
-                    )''')
+# 📌 판례 데이터 불러오기 (캐싱으로 속도 최적화)
+@st.cache_data(ttl=60)
+def load_precedents_df():
+    ws = get_worksheet("precedents")
+    records = ws.get_all_records()
+    cols = ["id", "main_cat", "mid_cat", "sub_cat", "p_number", "p_title", "p_content", "p_tags", "reg_date", "p_desc", "p_grade", "p_location", "p_related", "p_result", "read_count", "p_exams"]
+    if not records:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(records)
+    # 데이터 타입 안정화
+    if 'id' in df.columns:
+        df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+    if 'read_count' in df.columns:
+        df['read_count'] = pd.to_numeric(df['read_count'], errors='coerce').fillna(0).astype(int)
+    return df
+
+# 📌 판례 데이터 구글 시트에 저장하기
+def save_precedents_df(df):
+    ws = get_worksheet("precedents")
+    ws.clear()
+    
+    # NaN 및 float 형태(.0) 방지 처리
+    out_df = df.copy()
+    out_df.fillna("", inplace=True)
+    for col in out_df.columns:
+        out_df[col] = out_df[col].apply(lambda x: int(x) if isinstance(x, float) and x.is_integer() else x)
+        out_df[col] = out_df[col].astype(str)
         
-        new_columns = ["p_desc", "p_grade", "p_location", "p_related", "p_result", "read_count", "p_exams"]
-        for col in new_columns:
-            try:
-                if col == "read_count":
-                    c.execute(f"ALTER TABLE precedents ADD COLUMN {col} INTEGER DEFAULT 0")
-                else:
-                    c.execute(f"ALTER TABLE precedents ADD COLUMN {col} TEXT")
-            except sqlite3.OperationalError:
-                pass
+    data = [out_df.columns.values.tolist()] + out_df.values.tolist()
+    ws.update(values=data, range_name="A1")
+    load_precedents_df.clear() # 캐시 초기화 (수정 즉시 반영)
 
+# 📌 카테고리 데이터 불러오기
+@st.cache_data(ttl=60)
 def load_categories():
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT main_cat, mid_cat, sub_cat FROM categories")
-        rows = c.fetchall()
-    categories = {"헌법": {}, "행정법": {}}
-    for main, mid, sub in rows:
-        if mid:
-            if mid not in categories[main]:
-                categories[main][mid] = []
-            if sub and sub not in categories[main][mid]:
-                categories[main][mid].append(sub)
-    return categories
+    ws = get_worksheet("categories")
+    records = ws.get_all_records()
+    cats = {"헌법": {}, "행정법": {}}
+    for row in records:
+        main = row.get("main_cat")
+        mid = row.get("mid_cat")
+        sub = row.get("sub_cat")
+        if main and mid:
+            if mid not in cats[main]:
+                cats[main][mid] = []
+            if sub and sub not in cats[main][mid]:
+                cats[main][mid].append(sub)
+    return cats
 
 def add_category(main_cat, mid_cat, sub_cat=""):
-    with get_db() as conn:
-        c = conn.cursor()
-        try:
-            c.execute("INSERT INTO categories (main_cat, mid_cat, sub_cat) VALUES (?, ?, ?)", 
-                      (main_cat, mid_cat, sub_cat))
-            return True
-        except sqlite3.IntegrityError:
+    ws = get_worksheet("categories")
+    records = ws.get_all_records()
+    new_id = 1 if not records else max([int(r.get("id", 0)) for r in records]) + 1
+    
+    # 중복 체크
+    for r in records:
+        if r.get("main_cat") == main_cat and r.get("mid_cat") == mid_cat and r.get("sub_cat") == sub_cat:
             return False
+            
+    ws.append_row([new_id, main_cat, mid_cat, sub_cat])
+    load_categories.clear()
+    return True
 
+def delete_category(main_cat, mid_cat, sub_cat=None):
+    ws = get_worksheet("categories")
+    records = ws.get_all_records()
+    if not records: return
+    df = pd.DataFrame(records)
+    
+    if sub_cat is None:
+        df = df[~((df['main_cat'] == main_cat) & (df['mid_cat'] == mid_cat))]
+    else:
+        df = df[~((df['main_cat'] == main_cat) & (df['mid_cat'] == mid_cat) & (df['sub_cat'] == sub_cat))]
+        
+    ws.clear()
+    out_df = df.fillna("").astype(str)
+    data = [out_df.columns.values.tolist()] + out_df.values.tolist()
+    ws.update(values=data, range_name="A1")
+    load_categories.clear()
+
+
+# --- 유틸리티 함수 ---
 def sort_exams_desc(exam_text):
     if not exam_text:
         return ""
-    lines = [line.strip() for line in exam_text.split('\n') if line.strip()]
-    
+    lines = [line.strip() for line in str(exam_text).split('\n') if line.strip()]
     def get_year(s):
         match = re.search(r'\d{4}', s)
         return int(match.group()) if match else 0
-        
     sorted_lines = sorted(lines, key=get_year, reverse=True)
     return "\n".join(sorted_lines)
 
-init_db()
+# 데이터 로드
 categories = load_categories()
 
 # --- 커스텀 CSS ---
 st.markdown("""
     <style>
-    /* 기본 메트릭 컨테이너 스타일 */
     div[data-testid="metric-container"] {
         background-color: #f8f9fa;
         border: 1px solid #e9ecef;
@@ -139,20 +162,14 @@ st.markdown("""
     div[data-testid="stTextInput"] > div > div > input {
         border-radius: 20px;
     }
-    
-    /* 얇은 줄 구분선 스타일 */
     hr.thin-line {
         border: 0;
         border-top: 1px solid #e0e0e0;
         margin: 5px 0 5px 0;
     }
-    
-    /* 일반 버튼(페이지네이션 등) 높이 조정 */
     .stButton > button {
         height: 40px;
     }
-
-    /* 🚀 홈 화면 네비게이션 버튼을 메트릭(Metric) 카드처럼 꾸미는 CSS 매직 */
     div[data-testid="element-container"]:has(.metric-btn-marker) {
         display: none; 
     }
@@ -181,7 +198,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 📌 페이지 이동을 위한 안전한 콜백 함수
 def change_menu(target_menu):
     st.session_state['menu_choice'] = target_menu
 
@@ -202,19 +218,16 @@ with st.sidebar:
     ]
     menu = st.radio("메뉴", menu_options, key="menu_choice", label_visibility="collapsed")
     st.write("---")
-    st.caption("✔️ 비밀번호 보안 기능 적용됨")
+    st.caption("☁️ Google Sheets Cloud DB 연동됨")
 
 def get_stats():
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM precedents")
-        total = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM precedents WHERE p_grade='S' OR p_grade='A+'")
-        high_grade = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM precedents WHERE main_cat='헌법'")
-        const_total = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM precedents WHERE main_cat='행정법'")
-        admin_total = c.fetchone()[0]
+    df = load_precedents_df()
+    if df.empty:
+        return 0, 0, 0, 0
+    total = len(df)
+    high_grade = len(df[df['p_grade'].isin(['S', 'A+'])])
+    const_total = len(df[df['main_cat'] == '헌법'])
+    admin_total = len(df[df['main_cat'] == '행정법'])
     return total, high_grade, const_total, admin_total
 
 # --- 1. 홈 (대시보드) ---
@@ -246,29 +259,24 @@ if menu == "📊 홈 (대시보드)":
     
     st.write("")
     
-    with get_db() as conn:
-        if search_query:
-            like_query = f"%{search_query}%"
-            df_all = pd.read_sql_query('''
-                SELECT main_cat AS 대분류, mid_cat AS 목차, sub_cat AS 소분류, 
-                       p_number AS 판례번호, p_title AS 제목, p_result AS 판결결과, p_grade AS 중요도, 
-                       read_count AS 회독수, p_location AS 교재위치, p_exams AS 출제내역, p_tags AS 태그 
-                FROM precedents 
-                WHERE p_number LIKE ? OR p_tags LIKE ? OR p_title LIKE ? OR p_desc LIKE ? OR p_location LIKE ? OR p_related LIKE ? OR p_exams LIKE ?
-                ORDER BY id DESC
-            ''', conn, params=(like_query, like_query, like_query, like_query, like_query, like_query, like_query))
-        else:
-            df_all = pd.read_sql_query('''
-                SELECT main_cat AS 대분류, mid_cat AS 목차, sub_cat AS 소분류, 
-                       p_number AS 판례번호, p_title AS 제목, p_result AS 판결결과, p_grade AS 중요도, 
-                       read_count AS 회독수, p_location AS 교재위치, p_exams AS 출제내역, p_tags AS 태그 
-                FROM precedents 
-                ORDER BY id DESC LIMIT 20
-            ''', conn)
-
+    df_all = load_precedents_df()
     if not df_all.empty:
-        df_all = df_all.fillna("") 
-        st.dataframe(df_all, use_container_width=True, hide_index=True)
+        if search_query:
+            mask = df_all.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
+            df_all = df_all[mask]
+        
+        df_all = df_all.sort_values(by='id', ascending=False)
+        display_df = df_all.rename(columns={
+            "main_cat": "대분류", "mid_cat": "목차", "sub_cat": "소분류", 
+            "p_number": "판례번호", "p_title": "제목", "p_result": "판결결과", 
+            "p_grade": "중요도", "read_count": "회독수", "p_location": "교재위치", 
+            "p_exams": "출제내역", "p_tags": "태그"
+        })[["대분류", "목차", "소분류", "판례번호", "제목", "판결결과", "중요도", "회독수", "교재위치", "출제내역", "태그"]]
+        
+        if not search_query:
+            display_df = display_df.head(20)
+            
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
         if not search_query:
             st.caption("최근 등록된 판례 최대 20개를 보여줍니다.")
     else:
@@ -308,43 +316,35 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
     with c_sort1:
         sort_order = st.radio("정렬 기준", ["중요도순", "최신순"], horizontal=True, label_visibility="collapsed")
 
-    with get_db() as conn:
-        conn.row_factory = sqlite3.Row  
-        c = conn.cursor()
-        
-        query = "SELECT * FROM precedents WHERE main_cat = ?"
-        params = [subject]
+    df = load_precedents_df()
+    if not df.empty:
+        df = df[df['main_cat'] == subject]
         
         if subject_search:
-            like_query = f"%{subject_search}%"
-            query += " AND (p_number LIKE ? OR p_tags LIKE ? OR p_title LIKE ? OR p_desc LIKE ? OR p_exams LIKE ?)"
-            params.extend([like_query, like_query, like_query, like_query, like_query])
+            mask = (df['p_number'].astype(str).str.contains(subject_search, na=False) |
+                    df['p_tags'].astype(str).str.contains(subject_search, na=False) |
+                    df['p_title'].astype(str).str.contains(subject_search, na=False) |
+                    df['p_desc'].astype(str).str.contains(subject_search, na=False) |
+                    df['p_exams'].astype(str).str.contains(subject_search, na=False))
+            df = df[mask]
 
         if sel_mid != "전체":
-            query += " AND mid_cat = ?"
-            params.append(sel_mid)
+            df = df[df['mid_cat'] == sel_mid]
         if sel_sub != "전체":
-            query += " AND sub_cat = ?"
-            params.append(sel_sub)
+            df = df[df['sub_cat'] == sel_sub]
         if sel_grade != "전체":
-            query += " AND p_grade = ?"
-            params.append(sel_grade)
+            df = df[df['p_grade'] == sel_grade]
             
         if sort_order == "중요도순":
-            query += ''' ORDER BY CASE p_grade 
-                            WHEN 'S' THEN 1 
-                            WHEN 'A+' THEN 2 
-                            WHEN 'A' THEN 3 
-                            WHEN 'B+' THEN 4 
-                            WHEN 'B' THEN 5 
-                            WHEN 'C+' THEN 6 
-                            WHEN 'C' THEN 7 
-                            ELSE 8 END, id DESC'''
-        elif sort_order == "최신순":
-            query += " ORDER BY id DESC"
-                        
-        c.execute(query, params)
-        rows = c.fetchall()
+            grade_map = {'S': 1, 'A+': 2, 'A': 3, 'B+': 4, 'B': 5, 'C+': 6, 'C': 7}
+            df['grade_sort'] = df['p_grade'].map(grade_map).fillna(8)
+            df = df.sort_values(by=['grade_sort', 'id'], ascending=[True, False])
+        else:
+            df = df.sort_values(by='id', ascending=False)
+            
+        rows = df.to_dict('records')
+    else:
+        rows = []
 
     total_items = len(rows)
 
@@ -372,12 +372,11 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
         end_idx = start_idx + items_per_page
         paged_rows = rows[start_idx:end_idx]
 
-        for row in paged_rows:
-            p = dict(row)
+        for p in paged_rows:
             grade_mark = f"⭐ {p.get('p_grade', 'C')}" if p.get('p_grade') else ""
             result_mark = f"[{p.get('p_result')}] " if subject == '헌법' and p.get('p_result') else ""
             
-            rc = p.get('read_count') or 0
+            rc = int(p.get('read_count', 0))
             
             if rc >= 10:
                 fire_badge = "👑[마스터] "
@@ -410,12 +409,12 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                     if p.get('p_exams'):
                         st.write("---")
                         st.write("**🏆 시험 출제 내역**")
-                        for exam in p['p_exams'].split('\n'):
+                        for exam in str(p['p_exams']).split('\n'):
                             if exam.strip():
                                 st.markdown(f"- {exam}")
                 
                 with tab_edit:
-                    st.caption("카테고리를 바꾸거나 내용을 변경한 뒤 [수정 저장] 버튼을 누르세요.")
+                    st.caption("카테고리를 바꾸거나 내용을 변경한 뒤 [수정 저장] 버튼을 누르세요. (구글 시트 연동으로 1~3초가 소요됩니다)")
                     
                     c_cat1, c_cat2, c_cat3 = st.columns(3)
                     with c_cat1:
@@ -443,8 +442,8 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                         
                         with c1:
                             e_grade = st.selectbox("⭐ 중요도", grade_opts, index=grade_idx)
-                            e_number = st.text_input("📌 판례 번호", p.get('p_number', ''))
-                            e_loc = st.text_input("📖 교재 수록 위치", p.get('p_location', ''))
+                            e_number = st.text_input("📌 판례 번호", str(p.get('p_number', '')))
+                            e_loc = st.text_input("📖 교재 수록 위치", str(p.get('p_location', '')))
                             if e_main == '헌법':
                                 result_opts = ["합헌", "위헌", "헌법불합치", "기각", "인용", "각하", "한정위헌", "기타"]
                                 current_result = p.get('p_result') if p.get('p_result') in result_opts else "기타"
@@ -454,33 +453,44 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                                 e_result = ""
                                 
                         with c2:
-                            e_title = st.text_input("📝 판례 제목", p.get('p_title', ''))
-                            e_tags = st.text_input("🏷️ 태그", p.get('p_tags', ''))
-                            e_rel = st.text_input("🔗 연관 판례 및 조문", p.get('p_related', ''))
+                            e_title = st.text_input("📝 판례 제목", str(p.get('p_title', '')))
+                            e_tags = st.text_input("🏷️ 태그", str(p.get('p_tags', '')))
+                            e_rel = st.text_input("🔗 연관 판례 및 조문", str(p.get('p_related', '')))
                         
-                        e_desc = st.text_area("💡 판례 설명", p.get('p_desc', ''), height=100)
-                        e_content = st.text_area("📄 판례 요지", p.get('p_content', ''), height=150)
-                        e_exams = st.text_area("🏆 시험 출제 내역 (엔터로 여러 개 구분)", p.get('p_exams', ''), height=100)
+                        e_desc = st.text_area("💡 판례 설명", str(p.get('p_desc', '')), height=100)
+                        e_content = st.text_area("📄 판례 요지", str(p.get('p_content', '')), height=150)
+                        e_exams = st.text_area("🏆 시험 출제 내역 (엔터로 여러 개 구분)", str(p.get('p_exams', '')), height=100)
                         
                         if st.form_submit_button("수정 저장", use_container_width=True):
                             sorted_e_exams = sort_exams_desc(e_exams)
-                            with get_db() as up_conn:
-                                uc = up_conn.cursor()
-                                uc.execute('''UPDATE precedents 
-                                              SET main_cat=?, mid_cat=?, sub_cat=?, p_grade=?, p_number=?, p_title=?, p_tags=?, 
-                                                  p_location=?, p_related=?, p_desc=?, p_content=?, p_result=?, p_exams=?
-                                              WHERE id=?''',
-                                           (e_main, e_mid, e_sub, e_grade, e_number, e_title, e_tags, e_loc, e_rel, e_desc, e_content, e_result, sorted_e_exams, p['id']))
-                            st.success("✅ 수정이 완료되었습니다!")
-                            st.rerun()
+                            
+                            df_update = load_precedents_df()
+                            idx = df_update[df_update['id'].astype(str) == str(p['id'])].index
+                            if not idx.empty:
+                                df_update.loc[idx[0], "main_cat"] = e_main
+                                df_update.loc[idx[0], "mid_cat"] = e_mid
+                                df_update.loc[idx[0], "sub_cat"] = e_sub
+                                df_update.loc[idx[0], "p_grade"] = e_grade
+                                df_update.loc[idx[0], "p_number"] = e_number
+                                df_update.loc[idx[0], "p_title"] = e_title
+                                df_update.loc[idx[0], "p_tags"] = e_tags
+                                df_update.loc[idx[0], "p_location"] = e_loc
+                                df_update.loc[idx[0], "p_related"] = e_rel
+                                df_update.loc[idx[0], "p_desc"] = e_desc
+                                df_update.loc[idx[0], "p_content"] = e_content
+                                df_update.loc[idx[0], "p_result"] = e_result
+                                df_update.loc[idx[0], "p_exams"] = sorted_e_exams
+                                save_precedents_df(df_update)
+                                st.success("✅ 수정이 완료되었습니다!")
+                                st.rerun()
 
                     st.write("---")
                     with st.expander("🚨 판례 삭제 (주의)"):
                         st.caption("삭제한 판례는 복구할 수 없습니다.")
                         if st.button("🗑️ 이 판례 삭제하기", key=f"del_btn_{p['id']}", use_container_width=True, type="primary"):
-                            with get_db() as del_conn:
-                                dc = del_conn.cursor()
-                                dc.execute("DELETE FROM precedents WHERE id=?", (p['id'],))
+                            df_delete = load_precedents_df()
+                            df_delete = df_delete[df_delete['id'].astype(str) != str(p['id'])]
+                            save_precedents_df(df_delete)
                             st.success("🗑️ 판례가 삭제되었습니다.")
                             st.rerun()
 
@@ -501,9 +511,9 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
             btn_labels.append("◀")
             btn_pages.append(start_page - 1)
 
-        for p in range(start_page, end_page + 1):
-            btn_labels.append(str(p))
-            btn_pages.append(p)
+        for pg in range(start_page, end_page + 1):
+            btn_labels.append(str(pg))
+            btn_pages.append(pg)
 
         if end_page < total_pages:
             next_end = min(end_page + chunk_size, total_pages)
@@ -529,18 +539,19 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
     st.write("---")
     
     if st.button("🔄 새로운 판례 불러오기", use_container_width=True):
-        with get_db() as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("SELECT * FROM precedents WHERE main_cat = ? ORDER BY RANDOM() LIMIT 1", (subject,))
-            row = c.fetchone()
-            
-            if row:
-                st.session_state[f'random_p_{subject}'] = dict(row)
+        df = load_precedents_df()
+        if not df.empty:
+            df_subj = df[df['main_cat'] == subject]
+            if not df_subj.empty:
+                row = df_subj.sample(1).iloc[0].to_dict()
+                st.session_state[f'random_p_{subject}'] = row
                 st.session_state[f'read_done_{subject}'] = False
             else:
                 st.session_state[f'random_p_{subject}'] = None
                 st.warning(f"등록된 {subject} 판례가 없습니다. 판례를 먼저 등록해주세요.")
+        else:
+            st.session_state[f'random_p_{subject}'] = None
+            st.warning("등록된 판례가 없습니다.")
 
     p = st.session_state.get(f'random_p_{subject}')
     
@@ -548,7 +559,7 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
         st.write("")
         st.write("")
         grade_mark = f"⭐ {p.get('p_grade', 'C')}" if p.get('p_grade') else ""
-        rc = p.get('read_count') or 0
+        rc = int(p.get('read_count', 0))
         
         if rc >= 10:
             fire_badge = "👑[마스터] "
@@ -583,7 +594,7 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
             if p.get('p_exams'):
                 st.write("---")
                 st.write("**🏆 시험 출제 내역**")
-                for exam in p['p_exams'].split('\n'):
+                for exam in str(p['p_exams']).split('\n'):
                     if exam.strip():
                         st.markdown(f"- {exam}")
                         
@@ -594,7 +605,7 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
         st.write("")
         
         if st.session_state.get(f'read_done_{subject}'):
-            new_rc = p.get('read_count', 0)
+            new_rc = int(p.get('read_count', 0))
             if new_rc >= 10:
                 st.success(f"👑 **대단합니다! {new_rc}회독 마스터 달성!** 이 판례는 이제 완벽하게 내 것이 되었습니다.")
                 st.balloons()
@@ -606,35 +617,33 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
         
         with col_btn1:
             if st.button("✔️ 회독 완료", use_container_width=True, disabled=st.session_state.get(f'read_done_{subject}', False)):
-                with get_db() as conn:
-                    c = conn.cursor()
-                    c.execute("UPDATE precedents SET read_count = COALESCE(read_count, 0) + 1 WHERE id = ?", (p['id'],))
+                df_update = load_precedents_df()
+                idx = df_update[df_update['id'].astype(str) == str(p['id'])].index
+                if not idx.empty:
+                    current_rc = int(df_update.loc[idx[0], "read_count"])
+                    df_update.loc[idx[0], "read_count"] = current_rc + 1
+                    save_precedents_df(df_update)
                     
-                    c.execute("SELECT read_count FROM precedents WHERE id = ?", (p['id'],))
-                    new_count = c.fetchone()[0]
-                    
-                st.session_state[f'random_p_{subject}']['read_count'] = new_count
-                st.session_state[f'read_done_{subject}'] = True
-                st.rerun() 
+                    st.session_state[f'random_p_{subject}']['read_count'] = current_rc + 1
+                    st.session_state[f'read_done_{subject}'] = True
+                    st.rerun() 
                 
         with col_btn2:
             if st.button("⏭️ 다음 판례", use_container_width=True, type="primary"):
-                with get_db() as conn:
-                    conn.row_factory = sqlite3.Row
-                    c = conn.cursor()
-                    c.execute("SELECT * FROM precedents WHERE main_cat = ? ORDER BY RANDOM() LIMIT 1", (subject,))
-                    row = c.fetchone()
-                    if row:
-                        st.session_state[f'random_p_{subject}'] = dict(row)
-                        st.session_state[f'read_done_{subject}'] = False
-                    else:
-                        st.session_state[f'random_p_{subject}'] = None
+                df = load_precedents_df()
+                df_subj = df[df['main_cat'] == subject]
+                if not df_subj.empty:
+                    row = df_subj.sample(1).iloc[0].to_dict()
+                    st.session_state[f'random_p_{subject}'] = row
+                    st.session_state[f'read_done_{subject}'] = False
+                else:
+                    st.session_state[f'random_p_{subject}'] = None
                 st.rerun()
 
 # --- 4. 카테고리 관리 ---
 elif menu == "📁 카테고리 관리":
     st.title("📁 Categories")
-    st.write("목차와 세부 소분류를 추가하거나 삭제할 수 있습니다.")
+    st.write("목차와 세부 소분류를 추가하거나 삭제할 수 있습니다. (구글 시트 연동으로 1~3초 소요)")
     
     st.subheader("➕ 카테고리 추가")
     col1, col2 = st.columns(2)
@@ -673,9 +682,7 @@ elif menu == "📁 카테고리 관리":
         if mid_options_del:
             selected_mid_del = st.selectbox("삭제할 목차 선택", mid_options_del, key="del_mid_target")
             if st.button("목차 삭제 (하위 포함)", use_container_width=True, type="primary"):
-                with get_db() as conn:
-                    c = conn.cursor()
-                    c.execute("DELETE FROM categories WHERE main_cat=? AND mid_cat=?", (main_cat_del, selected_mid_del))
+                delete_category(main_cat_del, selected_mid_del)
                 st.success(f"'{selected_mid_del}' 목차가 삭제되었습니다.")
                 st.rerun()
         else:
@@ -691,9 +698,7 @@ elif menu == "📁 카테고리 관리":
             if sub_options_del:
                 selected_sub_del = st.selectbox("삭제할 소분류 선택", sub_options_del, key="del_sub_target")
                 if st.button("소분류 삭제", use_container_width=True, type="primary"):
-                    with get_db() as conn:
-                        c = conn.cursor()
-                        c.execute("DELETE FROM categories WHERE main_cat=? AND mid_cat=? AND sub_cat=?", (main_cat_del, selected_mid_for_sub, selected_sub_del))
+                    delete_category(main_cat_del, selected_mid_for_sub, selected_sub_del)
                     st.success(f"'{selected_sub_del}' 소분류가 삭제되었습니다.")
                     st.rerun()
             else:
@@ -702,7 +707,7 @@ elif menu == "📁 카테고리 관리":
 # --- 5. 판례 등록 ---
 elif menu == "✍️ 판례 등록":
     st.title("✍️ Add Precedent")
-    st.write("기출 내역 등 판례 상세 정보를 꼼꼼하게 기록하세요.")
+    st.write("기출 내역 등 판례 상세 정보를 꼼꼼하게 기록하세요. (구글 시트 연동으로 1~3초 소요)")
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -751,18 +756,23 @@ elif menu == "✍️ 판례 등록":
             if submit_btn:
                 if p_number and p_title:
                     sorted_exams = sort_exams_desc(p_exams) 
+                    reg_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    cleaned_tags = ", ".join([tag.strip() for tag in p_tags.split(",") if tag.strip()])
                     
-                    with get_db() as conn:
-                        c = conn.cursor()
-                        reg_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                        cleaned_tags = ", ".join([tag.strip() for tag in p_tags.split(",") if tag.strip()])
-                        
-                        c.execute('''INSERT INTO precedents 
-                                     (main_cat, mid_cat, sub_cat, p_number, p_title, p_content, 
-                                      p_tags, p_desc, p_grade, p_location, p_related, p_result, p_exams, reg_date) 
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                                  (reg_main, reg_mid, reg_sub, p_number, p_title, p_content, 
-                                   cleaned_tags, p_desc, p_grade, p_location, p_related, p_result, sorted_exams, reg_date))
-                    st.success(f"✅ [{p_grade}등급] 판례 저장 완료!")
+                    df = load_precedents_df()
+                    new_id = int(df['id'].max()) + 1 if not df.empty else 1
+                    
+                    new_row = pd.DataFrame([{
+                        "id": new_id, "main_cat": reg_main, "mid_cat": reg_mid, "sub_cat": reg_sub, 
+                        "p_number": p_number, "p_title": p_title, "p_content": p_content, 
+                        "p_tags": cleaned_tags, "reg_date": reg_date, "p_desc": p_desc, 
+                        "p_grade": p_grade, "p_location": p_location, "p_related": p_related, 
+                        "p_result": p_result, "read_count": 0, "p_exams": sorted_exams
+                    }])
+                    
+                    df = pd.concat([df, new_row], ignore_index=True)
+                    save_precedents_df(df)
+                    
+                    st.success(f"✅ [{p_grade}등급] 판례 저장 완료! (구글 시트에 반영됨)")
                 else:
                     st.error("판례 번호와 제목을 입력하세요.")
