@@ -1,4 +1,4 @@
-import streamlit as st
+\import streamlit as st
 import datetime
 import pandas as pd
 import re
@@ -165,18 +165,12 @@ def change_menu(target_menu):
 categories = load_categories()
 df_all_precedents = load_precedents_df()
 
-# --- 커스텀 CSS ---
+# --- 커스텀 CSS (불필요한 버튼 해킹 코드 완전 삭제) ---
 st.markdown("""
     <style>
     div[data-testid="metric-container"] { background-color: #f8f9fa; border: 1px solid #e9ecef; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
     hr.thin-line { border: 0; border-top: 1px solid #e0e0e0; margin: 5px 0 5px 0; }
     .stButton > button { height: 40px; }
-    div[data-testid="element-container"]:has(.metric-btn-marker) { display: none; }
-    div[data-testid="element-container"]:has(.metric-btn-marker) + div[data-testid="element-container"] button {
-        background-color: #f8f9fa; border: 1px solid #e9ecef; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); height: 104px; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; text-align: left; transition: all 0.2s ease;
-    }
-    div[data-testid="element-container"]:has(.metric-btn-marker) + div[data-testid="element-container"] button:hover { border-color: #ff4b4b; box-shadow: 2px 2px 8px rgba(0,0,0,0.1); }
-    div[data-testid="element-container"]:has(.metric-btn-marker) + div[data-testid="element-container"] button p { margin: 0; color: #555; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -222,14 +216,18 @@ if menu == "📊 홈 (대시보드)":
         total = high_grade = const_total = admin_total = 0
         
     col1, col2, col3, col4 = st.columns(4)
-    with col1: st.metric("총 등록 판례", f"{total} 개", "열공 중!")
-    with col2: st.metric("S 및 A+ 판례 (핵심)", f"{high_grade} 개", "우선 복습 권장")
+    with col1: 
+        st.metric("총 등록 판례", f"{total} 개", "열공 중!")
+    with col2: 
+        st.metric("S 및 A+ 판례 (핵심)", f"{high_grade} 개", "우선 복습 권장")
+    
+    # 📌 깔끔한 기본 숫자(Metric) 형태 복구 및 개별 이동 버튼 적용
     with col3:
-        st.markdown('<div class="metric-btn-marker"></div>', unsafe_allow_html=True)
-        st.button(f"🏛️ 헌법 판례  \n### {const_total} 개", on_click=change_menu, args=("🏛️ 헌법 판례집",), use_container_width=True)
+        st.metric("🏛️ 헌법 판례", f"{const_total} 개")
+        st.button("헌법 판례집 이동 ➡️", key="go_const", on_click=change_menu, args=("🏛️ 헌법 판례집",), use_container_width=True)
     with col4:
-        st.markdown('<div class="metric-btn-marker"></div>', unsafe_allow_html=True)
-        st.button(f"⚖️ 행정법 판례  \n### {admin_total} 개", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
+        st.metric("⚖️ 행정법 판례", f"{admin_total} 개")
+        st.button("행정법 판례집 이동 ➡️", key="go_admin", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
     
     st.write("---")
     search_query = st.text_input("🔍 Search", placeholder="판례 번호, 제목, 내용 통합 검색", label_visibility="collapsed")
@@ -532,7 +530,7 @@ elif menu == "✅ O/X 문제풀기":
                 st.markdown(f"**🔗 관련 판례:** {rel_num}")
 
 
-# --- 6. 카테고리 관리 (원상 복구) ---
+# --- 6. 카테고리 관리 ---
 elif menu == "📁 카테고리 관리":
     st.title("📁 Categories")
     st.write("목차와 세부 소분류를 추가하거나 삭제할 수 있습니다. (구글 시트 연동으로 1~3초 소요)")
@@ -597,7 +595,7 @@ elif menu == "📁 카테고리 관리":
                 st.info("해당 목차에 삭제할 소분류가 없습니다.")
 
 
-# --- 7. 판례 등록 (원상 복구) ---
+# --- 7. 판례 등록 ---
 elif menu == "✍️ 판례 등록":
     st.title("✍️ Add Precedent")
     st.write("기출 내역 등 판례 상세 정보를 꼼꼼하게 기록하세요. (저장 시 1~3초 소요)")
@@ -661,7 +659,7 @@ elif menu == "✍️ 판례 등록":
                     st.error("판례 번호와 제목을 입력하세요.")
 
 
-# --- 8. 지문 등록 (독립 메뉴) ---
+# --- 8. 지문 등록 ---
 elif menu == "✍️ 지문 등록":
     st.title("✍️ Add Passage")
     st.markdown("실제 출제된 기출문제 지문을 등록하여 O/X 퀴즈에 활용하세요.")
