@@ -124,7 +124,33 @@ def load_categories():
             if sub and sub not in cats[main][mid]: cats[main][mid].append(sub)
     return cats
 
-# --- 유틸리티 및 다이렉트 링크 함수 ---
+def add_category(main_cat, mid_cat, sub_cat=""):
+    ws = get_worksheet("categories")
+    records = ws.get_all_records()
+    new_id = 1 if not records else max([int(r.get("id", 0)) for r in records]) + 1
+    for r in records:
+        if r.get("main_cat") == main_cat and r.get("mid_cat") == mid_cat and r.get("sub_cat") == sub_cat:
+            return False
+    ws.append_row([new_id, main_cat, mid_cat, sub_cat])
+    load_categories.clear()
+    return True
+
+def delete_category(main_cat, mid_cat, sub_cat=None):
+    ws = get_worksheet("categories")
+    records = ws.get_all_records()
+    if not records: return
+    df = pd.DataFrame(records)
+    if sub_cat is None:
+        df = df[~((df['main_cat'] == main_cat) & (df['mid_cat'] == mid_cat))]
+    else:
+        df = df[~((df['main_cat'] == main_cat) & (df['mid_cat'] == mid_cat) & (df['sub_cat'] == sub_cat))]
+    ws.clear()
+    out_df = df.fillna("").astype(str)
+    data = [out_df.columns.values.tolist()] + out_df.values.tolist()
+    ws.update(values=data, range_name="A1")
+    load_categories.clear()
+
+# --- 유틸리티 ---
 def sort_exams_desc(exam_text):
     if not exam_text: return ""
     lines = [line.strip() for line in str(exam_text).split('\n') if line.strip()]
@@ -134,17 +160,10 @@ def sort_exams_desc(exam_text):
     return "\n".join(sorted(lines, key=get_year, reverse=True))
 
 def change_menu(target_menu):
-    st.session_state['menu_radio'] = target_menu
-    st.session_state['last_menu'] = target_menu
-
-def go_to_precedent(p_num, subject):
-    target_menu = f"🏛️ 헌법 판례집" if subject == '헌법' else f"⚖️ 행정법 판례집"
-    change_menu(target_menu)
-    st.session_state[f'search_{subject}'] = p_num
+    st.session_state['menu_choice'] = target_menu
 
 categories = load_categories()
 df_all_precedents = load_precedents_df()
-existing_p_numbers = df_all_precedents['p_number'].tolist() if not df_all_precedents.empty else []
 
 # --- 커스텀 CSS ---
 st.markdown("""
@@ -163,32 +182,27 @@ st.markdown("""
 
 
 # --- 사이드바 네비게이션 ---
+if 'menu_choice' not in st.session_state:
+    st.session_state['menu_choice'] = "📊 홈 (대시보드)"
+
 with st.sidebar:
     st.title("⚖️ 공판집")
     
-    # 📌 깔끔한 구분선 (글씨 없이 여백만 주는 용도)
     menu_options = [
         "📊 홈 (대시보드)", 
-        " ─── ",
-        "🏛️ 헌법 판례집", "⚖️ 행정법 판례집", 
-        "  ───  ",
-        "🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습", 
-        "   ───   ",
-        "📝 헌법 지문 복습", "📝 행정법 지문 복습", "✅ O/X 문제풀기",
-        "    ───    ",
-        "📁 카테고리 관리", "✍️ 판례 등록", "✍️ 지문 등록"
+        "🏛️ 헌법 판례집", 
+        "⚖️ 행정법 판례집", 
+        "🎲 헌법 랜덤 복습", 
+        "🎲 행정법 랜덤 복습", 
+        "📝 헌법 지문 복습", 
+        "📝 행정법 지문 복습", 
+        "✅ O/X 문제풀기",
+        "📁 카테고리 관리", 
+        "✍️ 판례 등록", 
+        "✍️ 지문 등록"
     ]
     
-    if 'last_menu' not in st.session_state:
-        st.session_state['last_menu'] = "📊 홈 (대시보드)"
-        
-    def sidebar_callback():
-        if "───" in st.session_state['menu_radio']:
-            st.session_state['menu_radio'] = st.session_state['last_menu']
-        else:
-            st.session_state['last_menu'] = st.session_state['menu_radio']
-
-    menu = st.radio("메뉴", menu_options, key="menu_radio", on_change=sidebar_callback, label_visibility="collapsed")
+    menu = st.radio("메뉴", menu_options, key="menu_choice", label_visibility="collapsed")
     st.write("---")
     st.caption("☁️ 공판집 클라우드 연동됨")
 
@@ -211,11 +225,11 @@ if menu == "📊 홈 (대시보드)":
     with col1: st.metric("총 등록 판례", f"{total} 개", "열공 중!")
     with col2: st.metric("S 및 A+ 판례 (핵심)", f"{high_grade} 개", "우선 복습 권장")
     with col3:
-        st.metric("🏛️ 헌법 판례", f"{const_total} 개")
-        st.button("헌법 판례집 이동 ➡️", key="go_const", on_click=change_menu, args=("🏛️ 헌법 판례집",), use_container_width=True)
+        st.markdown('<div class="metric-btn-marker"></div>', unsafe_allow_html=True)
+        st.button(f"🏛️ 헌법 판례  \n### {const_total} 개", on_click=change_menu, args=("🏛️ 헌법 판례집",), use_container_width=True)
     with col4:
-        st.metric("⚖️ 행정법 판례", f"{admin_total} 개")
-        st.button("행정법 판례집 이동 ➡️", key="go_admin", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
+        st.markdown('<div class="metric-btn-marker"></div>', unsafe_allow_html=True)
+        st.button(f"⚖️ 행정법 판례  \n### {admin_total} 개", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
     
     st.write("---")
     search_query = st.text_input("🔍 Search", placeholder="판례 번호, 제목, 내용 통합 검색", label_visibility="collapsed")
@@ -236,7 +250,7 @@ if menu == "📊 홈 (대시보드)":
         st.info("등록된 판례가 없습니다.")
 
 
-# --- 2. 과목별 판례집 (다이렉트 링크 기능) ---
+# --- 2. 과목별 판례집 ---
 elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
     subject = "헌법" if menu == "🏛️ 헌법 판례집" else "행정법"
     st.title(menu)
@@ -246,10 +260,10 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
     subject_search = st.text_input("🔍 판례 검색", placeholder="판례 번호, 제목 등 검색", key=search_key)
     
     col_mid, col_sub, col_grade = st.columns(3)
-    mid_options = ["전체"] + list(categories[subject].keys())
+    mid_options = ["전체"] + list(categories.get(subject, {}).keys())
     with col_mid: sel_mid = st.selectbox("📂 목차 선택", mid_options)
     with col_sub:
-        sel_sub = st.selectbox("📑 소분류 선택", ["전체"] + categories[subject].get(sel_mid, [])) if sel_mid != "전체" else st.selectbox("📑 소분류 선택", ["전체"], disabled=True)
+        sel_sub = st.selectbox("📑 소분류 선택", ["전체"] + categories.get(subject, {}).get(sel_mid, [])) if sel_mid != "전체" else st.selectbox("📑 소분류 선택", ["전체"], disabled=True)
     with col_grade: sel_grade = st.selectbox("⭐ 중요도 선택", ["전체", "S", "A+", "A", "B+", "B", "C+", "C"])
             
     st.write("") 
@@ -305,18 +319,7 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                 with tab_view:
                     st.markdown(f"**카테고리:** {p['main_cat']} > {p['mid_cat']} > {p['sub_cat']}")
                     if p.get('p_location'): st.markdown(f"**📖 교재 수록 위치:** {p['p_location']}")
-                    if p.get('p_related'):
-                        st.markdown(f"**🔗 연관 판례 및 조문:** {p['p_related']}")
-                        
-                        matched_nums = [num for num in existing_p_numbers if num and str(num) in str(p['p_related'])]
-                        if matched_nums:
-                            st.caption("👇 클릭 시 등록된 연관 판례 설명으로 즉시 이동합니다.")
-                            link_cols = st.columns(len(matched_nums) if len(matched_nums) < 4 else 4)
-                            for i, m_num in enumerate(matched_nums):
-                                with link_cols[i % 4]:
-                                    m_subject = df_all_precedents[df_all_precedents['p_number'] == m_num].iloc[0]['main_cat']
-                                    st.button(f"🚀 {m_num}", key=f"link_{p['id']}_{m_num}", on_click=go_to_precedent, args=(m_num, m_subject), use_container_width=True)
-
+                    if p.get('p_related'): st.markdown(f"**🔗 연관 판례 및 조문:** {p['p_related']}")
                     if p.get('p_tags'): st.markdown(f"**🏷️ 태그:** `{p['p_tags']}`")
                     
                     st.write("---")
@@ -339,7 +342,7 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                             e_number = st.text_input("📌 판례 번호", str(p.get('p_number', '')))
                         with c2:
                             e_title = st.text_input("📝 판례 제목", str(p.get('p_title', '')))
-                            e_rel = st.text_input("🔗 연관 판례 및 조문 (번호 입력 시 자동 링크)", str(p.get('p_related', '')))
+                            e_rel = st.text_input("🔗 연관 판례 및 조문", str(p.get('p_related', '')))
                         
                         e_desc = st.text_area("💡 판례 설명", str(p.get('p_desc', '')), height=100)
                         e_content = st.text_area("📄 판례 요지", str(p.get('p_content', '')), height=150)
@@ -463,9 +466,6 @@ elif menu in ["📝 헌법 지문 복습", "📝 행정법 지문 복습"]:
                     if p.get('related_p_number'):
                         rel_num = str(p['related_p_number']).strip()
                         st.markdown(f"**🔗 관련 판례:** {rel_num}")
-                        if rel_num in existing_p_numbers:
-                            m_subject = df_all_precedents[df_all_precedents['p_number'] == rel_num].iloc[0]['main_cat']
-                            st.button(f"🚀 {rel_num} 판례 원문 보기", key=f"p_link_{p['id']}", on_click=go_to_precedent, args=(rel_num, m_subject))
                     
                     with st.expander("✏️ 지문 삭제"):
                         if st.button("🗑️ 지문 삭제", key=f"del_pas_{p['id']}", type="primary"):
@@ -527,17 +527,74 @@ elif menu == "✅ O/X 문제풀기":
             st.markdown(f"**💡 해설:** {p['explanation']}")
             st.caption(f"📚 출처: {p['source']}")
             
-            if p.get('related_p_number') and str(p['related_p_number']).strip() in existing_p_numbers:
+            if p.get('related_p_number'):
                 rel_num = str(p['related_p_number']).strip()
-                m_subject = df_all_precedents[df_all_precedents['p_number'] == rel_num].iloc[0]['main_cat']
-                st.button(f"🚀 관련 판례 ({rel_num}) 다시 복습하기", key="ox_p_link", on_click=go_to_precedent, args=(rel_num, m_subject))
+                st.markdown(f"**🔗 관련 판례:** {rel_num}")
 
 
-# --- 6. 카테고리 관리 ---
+# --- 6. 카테고리 관리 (원상 복구) ---
 elif menu == "📁 카테고리 관리":
     st.title("📁 Categories")
-    st.write("목차와 세부 소분류를 추가하거나 삭제할 수 있습니다.")
-    st.info("구글 시트 연동으로 카테고리 관리 시 약간의 시간이 소요될 수 있습니다.")
+    st.write("목차와 세부 소분류를 추가하거나 삭제할 수 있습니다. (구글 시트 연동으로 1~3초 소요)")
+    
+    st.subheader("➕ 카테고리 추가")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**1단계: 목차 추가**")
+        main_cat_add = st.selectbox("대분류 선택", ["헌법", "행정법"], key="add_main")
+        new_mid = st.text_input("새로운 목차 이름")
+        if st.button("목차 추가", use_container_width=True):
+            if new_mid and add_category(main_cat_add, new_mid):
+                st.success("추가됨!")
+                st.rerun()
+                
+    with col2:
+        st.markdown("**2단계: 소분류 추가**")
+        mid_options_add = list(categories.get(main_cat_add, {}).keys())
+        if mid_options_add:
+            selected_mid_add = st.selectbox("목차 선택", mid_options_add, key="add_mid")
+            new_sub = st.text_input("새로운 소분류 이름")
+            if st.button("소분류 추가", use_container_width=True):
+                if new_sub and add_category(main_cat_add, selected_mid_add, new_sub):
+                    st.success("추가됨!")
+                    st.rerun()
+
+    st.write("---")
+    
+    st.subheader("🗑️ 카테고리 삭제")
+    st.caption("더 이상 사용하지 않는 목차나 소분류를 지울 수 있습니다. (※ 연결된 판례는 삭제되지 않습니다.)")
+    
+    main_cat_del = st.selectbox("대분류 선택", ["헌법", "행정법"], key="del_main")
+    
+    col3, col4 = st.columns(2)
+    mid_options_del = list(categories.get(main_cat_del, {}).keys())
+    
+    with col3:
+        st.markdown("**목차 전체 삭제**")
+        if mid_options_del:
+            selected_mid_del = st.selectbox("삭제할 목차 선택", mid_options_del, key="del_mid_target")
+            if st.button("목차 삭제 (하위 포함)", use_container_width=True, type="primary"):
+                delete_category(main_cat_del, selected_mid_del)
+                st.success(f"'{selected_mid_del}' 목차가 삭제되었습니다.")
+                st.rerun()
+        else:
+            st.info("삭제할 목차가 없습니다.")
+            
+    with col4:
+        st.markdown("**특정 소분류만 삭제**")
+        if mid_options_del:
+            selected_mid_for_sub = st.selectbox("목차 먼저 선택", mid_options_del, key="del_mid_for_sub")
+            sub_options_del = categories.get(main_cat_del, {}).get(selected_mid_for_sub, [])
+            sub_options_del = [s for s in sub_options_del if s] 
+            
+            if sub_options_del:
+                selected_sub_del = st.selectbox("삭제할 소분류 선택", sub_options_del, key="del_sub_target")
+                if st.button("소분류 삭제", use_container_width=True, type="primary"):
+                    delete_category(main_cat_del, selected_mid_for_sub, selected_sub_del)
+                    st.success(f"'{selected_sub_del}' 소분류가 삭제되었습니다.")
+                    st.rerun()
+            else:
+                st.info("해당 목차에 삭제할 소분류가 없습니다.")
 
 
 # --- 7. 판례 등록 (원상 복구) ---
@@ -549,11 +606,11 @@ elif menu == "✍️ 판례 등록":
     with col1:
         reg_main = st.selectbox("대분류", ["헌법", "행정법"])
     
-    mid_options = list(categories[reg_main].keys())
+    mid_options = list(categories.get(reg_main, {}).keys())
     with col2:
         reg_mid = st.selectbox("목차", mid_options if mid_options else ["목차 없음"])
         
-    sub_options = categories[reg_main].get(reg_mid, []) if reg_mid != "목차 없음" else []
+    sub_options = categories.get(reg_main, {}).get(reg_mid, []) if reg_mid != "목차 없음" else []
     with col3:
         reg_sub = st.selectbox("소분류", sub_options if sub_options else ["소분류 없음"])
         
@@ -574,7 +631,7 @@ elif menu == "✍️ 판례 등록":
             with col_loc:
                 p_location = st.text_input("📖 교재 수록 위치", placeholder="예: 2024 기본서 1권 152p")
             with col_rel:
-                p_related = st.text_input("🔗 연관 판례 및 조문 (번호 일치 시 자동 링크)", placeholder="예: 행정기본법 제2조, 2019헌바11")
+                p_related = st.text_input("🔗 연관 판례 및 조문", placeholder="예: 행정기본법 제2조, 2019헌바11")
                 
             p_content = st.text_area("📄 판례 요지 및 내용 (원문)", height=150)
             p_desc = st.text_area("💡 판례 설명 (나만의 쉬운 해설)", height=100)
@@ -604,7 +661,7 @@ elif menu == "✍️ 판례 등록":
                     st.error("판례 번호와 제목을 입력하세요.")
 
 
-# --- 8. 지문 등록 (신규 독립 메뉴) ---
+# --- 8. 지문 등록 (독립 메뉴) ---
 elif menu == "✍️ 지문 등록":
     st.title("✍️ Add Passage")
     st.markdown("실제 출제된 기출문제 지문을 등록하여 O/X 퀴즈에 활용하세요.")
@@ -617,7 +674,7 @@ elif menu == "✍️ 지문 등록":
         with col1:
             pas_source = st.text_input("📚 지문 출처 (예: 23년 국가직 7급)")
         with col2:
-            pas_related = st.text_input("🔗 관련 판례 번호 (등록된 번호 입력 시 자동 링크)")
+            pas_related = st.text_input("🔗 관련 판례 번호")
             
         pas_is_true = st.radio("✅ 참/거짓 정답 (O/X)", ["O", "X"], horizontal=True)
         pas_desc = st.text_area("💡 지문 해설 (오답인 이유 등)")
