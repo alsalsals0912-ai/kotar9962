@@ -7,7 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 
-# 🚨 Streamlit 화면 설정 (최상단 고정)
+# 🚨 Streamlit 화면 설정
 st.set_page_config(page_title="공판집 - 공무원 시험 판례 모음집", page_icon="⚖️", layout="wide")
 
 # --- 🔒 비밀번호 잠금 시스템 ---
@@ -54,7 +54,7 @@ def get_worksheet(sheet_name):
     doc = client.open_by_url(url)
     return doc.worksheet(sheet_name)
 
-# 📌 판례 데이터 (precedents)
+# 📌 판례 데이터
 @st.cache_data(ttl=60)
 def load_precedents_df():
     try:
@@ -62,10 +62,8 @@ def load_precedents_df():
         records = ws.get_all_records()
     except WorksheetNotFound:
         return pd.DataFrame()
-        
     cols = ["id", "main_cat", "mid_cat", "sub_cat", "p_number", "p_title", "p_content", "p_tags", "reg_date", "p_desc", "p_grade", "p_location", "p_related", "p_result", "read_count", "p_exams"]
-    if not records:
-        return pd.DataFrame(columns=cols)
+    if not records: return pd.DataFrame(columns=cols)
     df = pd.DataFrame(records)
     if 'id' in df.columns: df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
     if 'read_count' in df.columns: df['read_count'] = pd.to_numeric(df['read_count'], errors='coerce').fillna(0).astype(int)
@@ -81,19 +79,16 @@ def save_precedents_df(df):
     ws.update(values=data, range_name="A1")
     load_precedents_df.clear()
 
-# 📌 지문 데이터 (passages) 
+# 📌 지문 데이터
 @st.cache_data(ttl=60)
 def load_passages_df():
     try:
         ws = get_worksheet("passages")
         records = ws.get_all_records()
     except WorksheetNotFound:
-        cols = ["id", "subject", "passage_text", "source", "related_p_number", "is_true", "explanation", "reg_date"]
-        return pd.DataFrame(columns=cols)
-        
+        return pd.DataFrame(columns=["id", "subject", "passage_text", "source", "related_p_number", "is_true", "explanation", "reg_date"])
     cols = ["id", "subject", "passage_text", "source", "related_p_number", "is_true", "explanation", "reg_date"]
-    if not records:
-        return pd.DataFrame(columns=cols)
+    if not records: return pd.DataFrame(columns=cols)
     df = pd.DataFrame(records)
     if 'id' in df.columns: df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
     return df
@@ -107,6 +102,42 @@ def save_passages_df(df):
     data = [out_df.columns.values.tolist()] + out_df.values.tolist()
     ws.update(values=data, range_name="A1")
     load_passages_df.clear()
+
+# 📌 일일 학습 통계 데이터 (신규)
+@st.cache_data(ttl=60)
+def load_activity_log():
+    try:
+        ws = get_worksheet("activity_log")
+        records = ws.get_all_records()
+    except WorksheetNotFound:
+        return pd.DataFrame(columns=["date", "read_count", "ox_count"])
+    cols = ["date", "read_count", "ox_count"]
+    if not records: return pd.DataFrame(columns=cols)
+    return pd.DataFrame(records)
+
+def save_activity_log(df):
+    ws = get_worksheet("activity_log")
+    ws.clear()
+    out_df = df.copy().fillna(0)
+    data = [out_df.columns.values.tolist()] + out_df.values.tolist()
+    ws.update(values=data, range_name="A1")
+    load_activity_log.clear()
+
+def log_activity(activity_type):
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    df = load_activity_log()
+    
+    if df.empty or today not in df['date'].values:
+        new_row = pd.DataFrame([{"date": today, "read_count": 0, "ox_count": 0}])
+        df = pd.concat([df, new_row], ignore_index=True)
+
+    idx = df[df['date'] == today].index[0]
+    if activity_type == 'read':
+        df.loc[idx, "read_count"] = int(df.loc[idx, "read_count"]) + 1
+    elif activity_type == 'ox':
+        df.loc[idx, "ox_count"] = int(df.loc[idx, "ox_count"]) + 1
+        
+    save_activity_log(df)
 
 # 📌 카테고리 데이터
 @st.cache_data(ttl=60)
@@ -129,8 +160,7 @@ def add_category(main_cat, mid_cat, sub_cat=""):
     records = ws.get_all_records()
     new_id = 1 if not records else max([int(r.get("id", 0)) for r in records]) + 1
     for r in records:
-        if r.get("main_cat") == main_cat and r.get("mid_cat") == mid_cat and r.get("sub_cat") == sub_cat:
-            return False
+        if r.get("main_cat") == main_cat and r.get("mid_cat") == mid_cat and r.get("sub_cat") == sub_cat: return False
     ws.append_row([new_id, main_cat, mid_cat, sub_cat])
     load_categories.clear()
     return True
@@ -150,7 +180,6 @@ def delete_category(main_cat, mid_cat, sub_cat=None):
     ws.update(values=data, range_name="A1")
     load_categories.clear()
 
-# --- 유틸리티 ---
 def sort_exams_desc(exam_text):
     if not exam_text: return ""
     lines = [line.strip() for line in str(exam_text).split('\n') if line.strip()]
@@ -165,7 +194,7 @@ def change_menu(target_menu):
 categories = load_categories()
 df_all_precedents = load_precedents_df()
 
-# --- 커스텀 CSS (불필요한 버튼 해킹 코드 완전 삭제) ---
+# --- 커스텀 CSS ---
 st.markdown("""
     <style>
     div[data-testid="metric-container"] { background-color: #f8f9fa; border: 1px solid #e9ecef; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
@@ -216,19 +245,59 @@ if menu == "📊 홈 (대시보드)":
         total = high_grade = const_total = admin_total = 0
         
     col1, col2, col3, col4 = st.columns(4)
-    with col1: 
-        st.metric("총 등록 판례", f"{total} 개", "열공 중!")
-    with col2: 
-        st.metric("S 및 A+ 판례 (핵심)", f"{high_grade} 개", "우선 복습 권장")
-    
-    # 📌 깔끔한 기본 숫자(Metric) 형태 복구 및 개별 이동 버튼 적용
+    with col1: st.metric("총 등록 판례", f"{total} 개")
+    with col2: st.metric("S 및 A+ 판례 (핵심)", f"{high_grade} 개")
     with col3:
         st.metric("🏛️ 헌법 판례", f"{const_total} 개")
-        st.button("헌법 판례집 이동 ➡️", key="go_const", on_click=change_menu, args=("🏛️ 헌법 판례집",), use_container_width=True)
+        st.button("헌법 판례집 ➡️", key="go_const", on_click=change_menu, args=("🏛️ 헌법 판례집",), use_container_width=True)
     with col4:
         st.metric("⚖️ 행정법 판례", f"{admin_total} 개")
-        st.button("행정법 판례집 이동 ➡️", key="go_admin", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
+        st.button("행정법 판례집 ➡️", key="go_admin", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
     
+    # 📌 신규 기능: 일일 학습 통계 대시보드
+    df_log = load_activity_log()
+    st.write("---")
+    st.subheader("🔥 나의 학습 진행도")
+    
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    today_read, today_ox, streak = 0, 0, 0
+    
+    if not df_log.empty:
+        if today_str in df_log['date'].values:
+            today_read = int(df_log[df_log['date'] == today_str]['read_count'].iloc[0])
+            today_ox = int(df_log[df_log['date'] == today_str]['ox_count'].iloc[0])
+            
+        # 연속 학습일(Streak) 계산 로직
+        df_log['date_obj'] = pd.to_datetime(df_log['date']).dt.date
+        dates_sorted = sorted(df_log['date_obj'].unique(), reverse=True)
+        today_date = datetime.datetime.now().date()
+        yesterday_date = today_date - datetime.timedelta(days=1)
+        
+        if dates_sorted and (dates_sorted[0] == today_date or dates_sorted[0] == yesterday_date):
+            current = dates_sorted[0]
+            streak = 1
+            for d in dates_sorted[1:]:
+                if d == current - datetime.timedelta(days=1):
+                    streak += 1
+                    current = d
+                else:
+                    break
+    
+    sc1, sc2, sc3 = st.columns(3)
+    sc1.metric("🔥 연속 학습일", f"{streak} 일", "Keep going!" if streak > 0 else "")
+    sc2.metric("📖 오늘 판례 회독", f"{today_read} 번")
+    sc3.metric("✅ 오늘 O/X 풀이", f"{today_ox} 개")
+    
+    # 최근 7일 학습 그래프
+    if not df_log.empty and len(df_log) > 0:
+        df_chart = df_log.copy()
+        df_chart['date_str'] = pd.to_datetime(df_chart['date']).dt.strftime('%m/%d')
+        df_chart = df_chart.tail(7).set_index('date_str')
+        df_chart = df_chart.rename(columns={'read_count': '판례 회독', 'ox_count': 'O/X 풀이'})
+        st.bar_chart(df_chart[['판례 회독', 'O/X 풀이']])
+    else:
+        st.info("오늘부터 퀴즈를 풀거나 판례를 회독하면 통계 그래프가 나타납니다!")
+
     st.write("---")
     search_query = st.text_input("🔍 Search", placeholder="판례 번호, 제목, 내용 통합 검색", label_visibility="collapsed")
     
@@ -332,7 +401,6 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                             if exam.strip(): st.markdown(f"- {exam}")
                     
                 with tab_edit:
-                    st.caption("내용 수정 시 1~3초가 소요됩니다.")
                     with st.form(f"edit_form_{p['id']}"):
                         c1, c2 = st.columns(2)
                         with c1:
@@ -404,31 +472,31 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
         
         st.subheader(f"{grade_mark} {p.get('p_number', '')} {p.get('p_title', '')} {read_badge}")
         st.markdown(f"**카테고리:** {p['main_cat']} > {p['mid_cat']} > {p['sub_cat']}")
-        if p.get('p_tags'): st.markdown(f"**🏷️ 태그:** `{p['p_tags']}`")
-        if p.get('p_related'): st.markdown(f"**🔗 연관 조문:** {p['p_related']}")
         
         st.write("")
         with st.expander("💡 판결 결과 및 내용 확인하기 (클릭)"):
             if subject == '헌법' and p.get('p_result'): st.markdown(f"### ⚖️ 판결 결과: [{p.get('p_result')}]")
             st.info(p.get('p_desc', '설명이 없습니다.'))
             st.write(p.get('p_content', '내용이 없습니다.'))
-            if p.get('p_exams'):
-                for exam in str(p['p_exams']).split('\n'):
-                    if exam.strip(): st.markdown(f"- {exam}")
                 
         st.write("")
         if st.session_state.get(f'read_done_{subject}'):
-            st.success(f"🎉 **{int(p.get('read_count', 0)) + 1}번째 회독 완료!**")
+            st.success(f"🎉 **{int(p.get('read_count', 0)) + 1}번째 회독 완료!** 통계에 기록되었습니다.")
         
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("✔️ 회독 완료", use_container_width=True, disabled=st.session_state.get(f'read_done_{subject}', False)):
+                # 회독수 올리기
                 df_update = load_precedents_df()
                 idx = df_update[df_update['id'].astype(str) == str(p['id'])].index
                 if not idx.empty:
                     current_rc = int(df_update.loc[idx[0], "read_count"])
                     df_update.loc[idx[0], "read_count"] = current_rc + 1
                     save_precedents_df(df_update)
+                    
+                    # 📌 통계 로그 남기기
+                    log_activity('read')
+                    
                     st.session_state[f'random_p_{subject}']['read_count'] = current_rc + 1
                     st.session_state[f'read_done_{subject}'] = True
                     st.rerun() 
@@ -445,7 +513,6 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
 elif menu in ["📝 헌법 지문 복습", "📝 행정법 지문 복습"]:
     subject = "헌법" if menu == "📝 헌법 지문 복습" else "행정법"
     st.title(menu)
-    st.markdown(f"등록된 {subject} 기출 지문을 모아보고 복습합니다.")
     st.write("---")
     
     df_passages = load_passages_df()
@@ -461,10 +528,6 @@ elif menu in ["📝 헌법 지문 복습", "📝 행정법 지문 복습"]:
                     st.markdown(f"**📚 출처:** {p['source']}")
                     st.markdown(f"**💡 정답 및 해설:** [{p['is_true']}] {p['explanation']}")
                     
-                    if p.get('related_p_number'):
-                        rel_num = str(p['related_p_number']).strip()
-                        st.markdown(f"**🔗 관련 판례:** {rel_num}")
-                    
                     with st.expander("✏️ 지문 삭제"):
                         if st.button("🗑️ 지문 삭제", key=f"del_pas_{p['id']}", type="primary"):
                             df_delete = load_passages_df()
@@ -479,7 +542,6 @@ elif menu in ["📝 헌법 지문 복습", "📝 행정법 지문 복습"]:
 # --- 5. ✅ O/X 문제풀기 ---
 elif menu == "✅ O/X 문제풀기":
     st.title("✅ 실전 O/X 문제풀기")
-    st.markdown("등록된 지문을 랜덤으로 풀어보며 실전 감각을 극대화하세요!")
     st.write("---")
     
     ox_subject = st.radio("과목 선택", ["전체", "헌법", "행정법"], horizontal=True)
@@ -508,46 +570,42 @@ elif menu == "✅ O/X 문제풀기":
         
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("⭕ 맞다 (O)", use_container_width=True):
+            if st.button("⭕ 맞다 (O)", use_container_width=True, disabled=st.session_state.ox_answered):
                 st.session_state.ox_user_answer = 'O'
                 st.session_state.ox_answered = True
+                log_activity('ox') # 📌 통계 로그 남기기
+                st.rerun()
         with c2:
-            if st.button("❌ 틀리다 (X)", use_container_width=True):
+            if st.button("❌ 틀리다 (X)", use_container_width=True, disabled=st.session_state.ox_answered):
                 st.session_state.ox_user_answer = 'X'
                 st.session_state.ox_answered = True
+                log_activity('ox') # 📌 통계 로그 남기기
+                st.rerun()
                 
         if st.session_state.ox_answered:
             st.write("---")
             correct = p['is_true'] == st.session_state.ox_user_answer
-            if correct: st.success("🎉 정답입니다!")
+            if correct: st.success("🎉 정답입니다! (통계에 기록되었습니다)")
             else: st.error(f"😢 틀렸습니다. (정답: {p['is_true']})")
             
             st.markdown(f"**💡 해설:** {p['explanation']}")
-            st.caption(f"📚 출처: {p['source']}")
-            
-            if p.get('related_p_number'):
-                rel_num = str(p['related_p_number']).strip()
-                st.markdown(f"**🔗 관련 판례:** {rel_num}")
 
 
 # --- 6. 카테고리 관리 ---
 elif menu == "📁 카테고리 관리":
     st.title("📁 Categories")
-    st.write("목차와 세부 소분류를 추가하거나 삭제할 수 있습니다. (구글 시트 연동으로 1~3초 소요)")
+    st.write("목차와 세부 소분류를 추가하거나 삭제할 수 있습니다.")
     
     st.subheader("➕ 카테고리 추가")
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("**1단계: 목차 추가**")
         main_cat_add = st.selectbox("대분류 선택", ["헌법", "행정법"], key="add_main")
         new_mid = st.text_input("새로운 목차 이름")
         if st.button("목차 추가", use_container_width=True):
             if new_mid and add_category(main_cat_add, new_mid):
                 st.success("추가됨!")
                 st.rerun()
-                
     with col2:
-        st.markdown("**2단계: 소분류 추가**")
         mid_options_add = list(categories.get(main_cat_add, {}).keys())
         if mid_options_add:
             selected_mid_add = st.selectbox("목차 선택", mid_options_add, key="add_mid")
@@ -558,103 +616,64 @@ elif menu == "📁 카테고리 관리":
                     st.rerun()
 
     st.write("---")
-    
     st.subheader("🗑️ 카테고리 삭제")
-    st.caption("더 이상 사용하지 않는 목차나 소분류를 지울 수 있습니다. (※ 연결된 판례는 삭제되지 않습니다.)")
-    
     main_cat_del = st.selectbox("대분류 선택", ["헌법", "행정법"], key="del_main")
-    
     col3, col4 = st.columns(2)
     mid_options_del = list(categories.get(main_cat_del, {}).keys())
     
     with col3:
-        st.markdown("**목차 전체 삭제**")
         if mid_options_del:
             selected_mid_del = st.selectbox("삭제할 목차 선택", mid_options_del, key="del_mid_target")
             if st.button("목차 삭제 (하위 포함)", use_container_width=True, type="primary"):
                 delete_category(main_cat_del, selected_mid_del)
                 st.success(f"'{selected_mid_del}' 목차가 삭제되었습니다.")
                 st.rerun()
-        else:
-            st.info("삭제할 목차가 없습니다.")
-            
     with col4:
-        st.markdown("**특정 소분류만 삭제**")
         if mid_options_del:
             selected_mid_for_sub = st.selectbox("목차 먼저 선택", mid_options_del, key="del_mid_for_sub")
             sub_options_del = categories.get(main_cat_del, {}).get(selected_mid_for_sub, [])
             sub_options_del = [s for s in sub_options_del if s] 
-            
             if sub_options_del:
                 selected_sub_del = st.selectbox("삭제할 소분류 선택", sub_options_del, key="del_sub_target")
                 if st.button("소분류 삭제", use_container_width=True, type="primary"):
                     delete_category(main_cat_del, selected_mid_for_sub, selected_sub_del)
                     st.success(f"'{selected_sub_del}' 소분류가 삭제되었습니다.")
                     st.rerun()
-            else:
-                st.info("해당 목차에 삭제할 소분류가 없습니다.")
 
 
 # --- 7. 판례 등록 ---
 elif menu == "✍️ 판례 등록":
     st.title("✍️ Add Precedent")
-    st.write("기출 내역 등 판례 상세 정보를 꼼꼼하게 기록하세요. (저장 시 1~3초 소요)")
     
     col1, col2, col3 = st.columns(3)
-    with col1:
-        reg_main = st.selectbox("대분류", ["헌법", "행정법"])
-    
+    with col1: reg_main = st.selectbox("대분류", ["헌법", "행정법"])
     mid_options = list(categories.get(reg_main, {}).keys())
-    with col2:
-        reg_mid = st.selectbox("목차", mid_options if mid_options else ["목차 없음"])
-        
+    with col2: reg_mid = st.selectbox("목차", mid_options if mid_options else ["목차 없음"])
     sub_options = categories.get(reg_main, {}).get(reg_mid, []) if reg_mid != "목차 없음" else []
-    with col3:
-        reg_sub = st.selectbox("소분류", sub_options if sub_options else ["소분류 없음"])
+    with col3: reg_sub = st.selectbox("소분류", sub_options if sub_options else ["소분류 없음"])
         
     if reg_mid == "목차 없음" or reg_sub == "소분류 없음":
-        st.warning("카테고리 관리 메뉴에서 목차와 소분류를 먼저 생성해주세요.")
+        st.warning("카테고리를 먼저 생성해주세요.")
     else:
         with st.form("precedent_form", clear_on_submit=True):
             c_grade, c_result = st.columns(2)
-            with c_grade:
-                p_grade = st.selectbox("⭐ 중요도", ["S", "A+", "A", "B+", "B", "C+", "C"], index=2)
-            with c_result:
-                p_result = st.selectbox("⚖️ 판결 결과", ["합헌", "위헌", "헌법불합치", "기각", "인용", "각하", "한정위헌", "기타"]) if reg_main == "헌법" else ""
+            with c_grade: p_grade = st.selectbox("⭐ 중요도", ["S", "A+", "A", "B+", "B", "C+", "C"], index=2)
+            with c_result: p_result = st.selectbox("⚖️ 판결 결과", ["합헌", "위헌", "헌법불합치", "기각", "인용", "각하", "한정위헌", "기타"]) if reg_main == "헌법" else ""
             
-            p_number = st.text_input("📌 판례 번호", placeholder="예: 2018헌마736")
-            p_title = st.text_input("📝 판례 제목", placeholder="예: 공무원 시험 응시연령 상한 사건")
-            
-            col_loc, col_rel = st.columns(2)
-            with col_loc:
-                p_location = st.text_input("📖 교재 수록 위치", placeholder="예: 2024 기본서 1권 152p")
-            with col_rel:
-                p_related = st.text_input("🔗 연관 판례 및 조문", placeholder="예: 행정기본법 제2조, 2019헌바11")
-                
+            p_number = st.text_input("📌 판례 번호")
+            p_title = st.text_input("📝 판례 제목")
             p_content = st.text_area("📄 판례 요지 및 내용 (원문)", height=150)
             p_desc = st.text_area("💡 판례 설명 (나만의 쉬운 해설)", height=100)
-            p_tags = st.text_input("🏷️ 태그 (쉼표로 구분)", placeholder="예: 공무원, 평등권")
-            p_exams = st.text_area("🏆 시험 출제 내역 (엔터키로 구분)", height=100)
             
             if st.form_submit_button("저장", use_container_width=True):
                 if p_number and p_title:
-                    sorted_exams = sort_exams_desc(p_exams) 
                     reg_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                    cleaned_tags = ", ".join([tag.strip() for tag in p_tags.split(",") if tag.strip()])
-                    
                     df = load_precedents_df()
                     new_id = int(df['id'].max()) + 1 if not df.empty else 1
-                    
-                    new_row = pd.DataFrame([{
-                        "id": new_id, "main_cat": reg_main, "mid_cat": reg_mid, "sub_cat": reg_sub, 
-                        "p_number": p_number, "p_title": p_title, "p_content": p_content, 
-                        "p_tags": cleaned_tags, "reg_date": reg_date, "p_desc": p_desc, 
-                        "p_grade": p_grade, "p_location": p_location, "p_related": p_related, 
-                        "p_result": p_result, "read_count": 0, "p_exams": sorted_exams
-                    }])
+                    new_row = pd.DataFrame([{"id": new_id, "main_cat": reg_main, "mid_cat": reg_mid, "sub_cat": reg_sub, "p_number": p_number, "p_title": p_title, "p_content": p_content, "reg_date": reg_date, "p_desc": p_desc, "p_grade": p_grade, "read_count": 0}])
                     df = pd.concat([df, new_row], ignore_index=True)
                     save_precedents_df(df)
-                    st.success(f"✅ [{p_grade}등급] 판례 저장 완료! (구글 시트에 반영됨)")
+                    st.success("✅ 저장 완료!")
                 else:
                     st.error("판례 번호와 제목을 입력하세요.")
 
@@ -662,18 +681,11 @@ elif menu == "✍️ 판례 등록":
 # --- 8. 지문 등록 ---
 elif menu == "✍️ 지문 등록":
     st.title("✍️ Add Passage")
-    st.markdown("실제 출제된 기출문제 지문을 등록하여 O/X 퀴즈에 활용하세요.")
     
     with st.form("passage_form", clear_on_submit=True):
         pas_main = st.selectbox("과목", ["헌법", "행정법"])
         pas_text = st.text_area("📝 지문 내용 (실제 출제 문장)")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            pas_source = st.text_input("📚 지문 출처 (예: 23년 국가직 7급)")
-        with col2:
-            pas_related = st.text_input("🔗 관련 판례 번호")
-            
+        pas_source = st.text_input("📚 지문 출처 (예: 23년 국가직 7급)")
         pas_is_true = st.radio("✅ 참/거짓 정답 (O/X)", ["O", "X"], horizontal=True)
         pas_desc = st.text_area("💡 지문 해설 (오답인 이유 등)")
         
@@ -682,15 +694,9 @@ elif menu == "✍️ 지문 등록":
                 df_pas = load_passages_df()
                 new_id = int(df_pas['id'].max()) + 1 if not df_pas.empty else 1
                 reg_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                
-                new_row = pd.DataFrame([{
-                    "id": new_id, "subject": pas_main, "passage_text": pas_text, 
-                    "source": pas_source, "related_p_number": pas_related, 
-                    "is_true": pas_is_true, "explanation": pas_desc, "reg_date": reg_date
-                }])
-                
+                new_row = pd.DataFrame([{"id": new_id, "subject": pas_main, "passage_text": pas_text, "source": pas_source, "is_true": pas_is_true, "explanation": pas_desc, "reg_date": reg_date}])
                 df_pas = pd.concat([df_pas, new_row], ignore_index=True)
                 save_passages_df(df_pas)
-                st.success("✅ 기출 지문이 구글 시트에 안전하게 저장되었습니다!")
+                st.success("✅ 기출 지문이 저장되었습니다!")
             else:
                 st.error("지문 내용을 입력해주세요.")
