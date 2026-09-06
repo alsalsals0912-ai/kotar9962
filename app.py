@@ -4,6 +4,7 @@ import pandas as pd
 import re
 import json
 import gspread
+import calendar
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 
@@ -103,17 +104,19 @@ def save_passages_df(df):
     ws.update(values=data, range_name="A1")
     load_passages_df.clear()
 
-# 📌 일일 학습 통계 데이터
+# 📌 일일 학습 통계 데이터 (reg_count 추가)
 @st.cache_data(ttl=60)
 def load_activity_log():
     try:
         ws = get_worksheet("activity_log")
         records = ws.get_all_records()
     except WorksheetNotFound:
-        return pd.DataFrame(columns=["date", "read_count", "ox_count"])
-    cols = ["date", "read_count", "ox_count"]
+        return pd.DataFrame(columns=["date", "read_count", "ox_count", "reg_count"])
+    cols = ["date", "read_count", "ox_count", "reg_count"]
     if not records: return pd.DataFrame(columns=cols)
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    if 'reg_count' not in df.columns: df['reg_count'] = 0
+    return df
 
 def save_activity_log(df):
     ws = get_worksheet("activity_log")
@@ -127,11 +130,12 @@ def log_activity(activity_type):
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     df = load_activity_log()
     if df.empty or today not in df['date'].values:
-        new_row = pd.DataFrame([{"date": today, "read_count": 0, "ox_count": 0}])
+        new_row = pd.DataFrame([{"date": today, "read_count": 0, "ox_count": 0, "reg_count": 0}])
         df = pd.concat([df, new_row], ignore_index=True)
     idx = df[df['date'] == today].index[0]
     if activity_type == 'read': df.loc[idx, "read_count"] = int(df.loc[idx, "read_count"]) + 1
     elif activity_type == 'ox': df.loc[idx, "ox_count"] = int(df.loc[idx, "ox_count"]) + 1
+    elif activity_type == 'reg': df.loc[idx, "reg_count"] = int(df.loc[idx, "reg_count"]) + 1
     save_activity_log(df)
 
 # 📌 카테고리 데이터
@@ -194,9 +198,11 @@ st.markdown("""
     <style>
     div[data-testid="metric-container"] { background-color: #f8f9fa; border: 1px solid #e9ecef; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
     hr.thin-line { border: 0; border-top: 1px solid #e0e0e0; margin: 5px 0 5px 0; }
-    .stButton > button { height: 40px; }
     .tag-badge { background-color: #e9ecef; color: #495057; padding: 4px 10px; border-radius: 15px; font-size: 13px; font-weight: 500; margin-right: 5px; display: inline-block; }
     .tag-badge-s { background-color: #ffe3e3; color: #c92a2a; padding: 4px 10px; border-radius: 15px; font-size: 13px; font-weight: 500; margin-right: 5px; display: inline-block; }
+    /* 다홍색 캘린더 버튼을 위한 스타일 (Primary button) */
+    div.stButton > button[kind="primary"] { background-color: #FF7F50; border-color: #FF7F50; color: white; }
+    div.stButton > button[kind="primary"]:hover { background-color: #FF6347; border-color: #FF6347; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -231,8 +237,39 @@ with st.sidebar:
 # --- 1. 홈 (대시보드) ---
 if menu == "📊 홈 (대시보드)":
     st.title("⚖️ 공판집 - 공무원 시험 판례 모음집")
-    st.write("")
     
+    # 📌 연속 학습일 계산 (잔디 심기)
+    df_log = load_activity_log()
+    streak = 0
+    today_date = datetime.datetime.now().date()
+    yesterday_date = today_date - datetime.timedelta(days=1)
+    
+    if not df_log.empty:
+        df_log['date_obj'] = pd.to_datetime(df_log['date']).dt.date
+        
+        # 학습 활동이 하나라도 있는 날짜만 추출
+        active_days = df_log[(df_log['read_count'] > 0) | (df_log['ox_count'] > 0) | (df_log['reg_count'] > 0)]
+        dates_sorted = sorted(active_days['date_obj'].unique(), reverse=True)
+        
+        if dates_sorted and (dates_sorted[0] == today_date or dates_sorted[0] == yesterday_date):
+            current = dates_sorted[0]
+            streak = 1
+            for d in dates_sorted[1:]:
+                if d == current - datetime.timedelta(days=1):
+                    streak += 1
+                    current = d
+                else:
+                    break
+                    
+    # 동기부여 문구
+    if streak > 0:
+        st.markdown(f"<h2 style='text-align: center; color: #FF7F50;'>🔥 {streak}일 연속 학습 완료! 🔥</h2>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<h2 style='text-align: center; color: #777;'>🌱 오늘부터 다시 학습을 시작해보세요!</h2>", unsafe_allow_html=True)
+    
+    st.write("---")
+    
+    # 📌 통계 메트릭
     if not df_all_precedents.empty:
         total = len(df_all_precedents)
         high_grade = len(df_all_precedents[df_all_precedents['p_grade'].isin(['S', 'A+'])])
@@ -251,47 +288,108 @@ if menu == "📊 홈 (대시보드)":
         st.metric("⚖️ 행정법 판례", f"{admin_total} 개")
         st.button("행정법 판례집 ➡️", key="go_admin", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
     
-    df_log = load_activity_log()
     st.write("---")
-    st.subheader("🔥 나의 학습 진행도")
     
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    today_read, today_ox, streak = 0, 0, 0
+    # 📌 다홍색 잔디 달력 (Calendar)
+    st.subheader("📅 나의 학습 달력 (잔디 심기)")
     
-    if not df_log.empty:
-        if today_str in df_log['date'].values:
-            today_read = int(df_log[df_log['date'] == today_str]['read_count'].iloc[0])
-            today_ox = int(df_log[df_log['date'] == today_str]['ox_count'].iloc[0])
-            
-        df_log['date_obj'] = pd.to_datetime(df_log['date']).dt.date
-        dates_sorted = sorted(df_log['date_obj'].unique(), reverse=True)
-        today_date = datetime.datetime.now().date()
-        yesterday_date = today_date - datetime.timedelta(days=1)
+    if 'cal_year' not in st.session_state: st.session_state.cal_year = today_date.year
+    if 'cal_month' not in st.session_state: st.session_state.cal_month = today_date.month
+    if 'sel_date' not in st.session_state: st.session_state.sel_date = today_date
+
+    col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
+    with col_nav1:
+        if st.button("◀ 이전 달", use_container_width=True):
+            if st.session_state.cal_month == 1:
+                st.session_state.cal_month = 12
+                st.session_state.cal_year -= 1
+            else:
+                st.session_state.cal_month -= 1
+            st.rerun()
+    with col_nav2:
+        st.markdown(f"<h3 style='text-align: center; margin-top: 0;'>{st.session_state.cal_year}년 {st.session_state.cal_month}월</h3>", unsafe_allow_html=True)
+    with col_nav3:
+        if st.button("다음 달 ▶", use_container_width=True):
+            if st.session_state.cal_month == 12:
+                st.session_state.cal_month = 1
+                st.session_state.cal_year += 1
+            else:
+                st.session_state.cal_month += 1
+            st.rerun()
+
+    # 달력 그리기 (일요일 시작)
+    cal = calendar.Calendar(firstweekday=6)
+    month_cal = cal.monthdayscalendar(st.session_state.cal_year, st.session_state.cal_month)
+    weekdays = ["일", "월", "화", "수", "목", "금", "토"]
+    
+    cols = st.columns(7)
+    for i, w in enumerate(weekdays):
+        cols[i].markdown(f"<div style='text-align:center; font-weight:bold; padding-bottom: 10px;'>{w}</div>", unsafe_allow_html=True)
         
-        if dates_sorted and (dates_sorted[0] == today_date or dates_sorted[0] == yesterday_date):
-            current = dates_sorted[0]
-            streak = 1
-            for d in dates_sorted[1:]:
-                if d == current - datetime.timedelta(days=1):
-                    streak += 1
-                    current = d
-                else:
-                    break
+    for week in month_cal:
+        cols = st.columns(7)
+        for i, day in enumerate(week):
+            if day == 0:
+                cols[i].write("")
+            else:
+                curr_date_str = f"{st.session_state.cal_year}-{st.session_state.cal_month:02d}-{day:02d}"
+                has_activity = False
+                
+                if not df_log.empty and curr_date_str in df_log['date'].values:
+                    log_row = df_log[df_log['date'] == curr_date_str].iloc[0]
+                    if int(log_row.get('read_count', 0)) > 0 or int(log_row.get('ox_count', 0)) > 0 or int(log_row.get('reg_count', 0)) > 0:
+                        has_activity = True
+                
+                # 활동이 있으면 다홍색(primary), 없으면 회색(secondary)
+                btn_type = "primary" if has_activity else "secondary"
+                
+                if cols[i].button(str(day), key=f"cal_{curr_date_str}", type=btn_type, use_container_width=True):
+                    st.session_state.sel_date = datetime.date(st.session_state.cal_year, st.session_state.cal_month, day)
+                    st.rerun()
+
+    # 📌 선택한 날짜 상세 기록
+    st.write("")
+    sel_date_str = st.session_state.sel_date.strftime("%Y-%m-%d")
+    st.markdown(f"#### 🔍 {st.session_state.sel_date.strftime('%Y년 %m월 %d일')} 상세 기록")
     
-    sc1, sc2, sc3 = st.columns(3)
-    sc1.metric("🔥 연속 학습일", f"{streak} 일", "Keep going!" if streak > 0 else "")
-    sc2.metric("📖 오늘 판례 회독", f"{today_read} 번")
-    sc3.metric("✅ 오늘 O/X 풀이", f"{today_ox} 개")
+    sel_read, sel_ox, sel_reg = 0, 0, 0
+    if not df_log.empty and sel_date_str in df_log['date'].values:
+        log_row = df_log[df_log['date'] == sel_date_str].iloc[0]
+        sel_read = int(log_row.get('read_count', 0))
+        sel_ox = int(log_row.get('ox_count', 0))
+        sel_reg = int(log_row.get('reg_count', 0))
     
-    if not df_log.empty and len(df_log) > 0:
-        df_chart = df_log.copy()
-        df_chart['date_str'] = pd.to_datetime(df_chart['date']).dt.strftime('%m/%d')
-        df_chart = df_chart.tail(7).set_index('date_str')
-        df_chart = df_chart.rename(columns={'read_count': '판례 회독', 'ox_count': 'O/X 풀이'})
-        st.bar_chart(df_chart[['판례 회독', 'O/X 풀이']])
+    col_d1, col_d2, col_d3 = st.columns(3)
+    col_d1.metric("✍️ 등록한 데이터(판례/지문)", f"{sel_reg} 개")
+    col_d2.metric("📖 판례 회독 수", f"{sel_read} 번")
+    col_d3.metric("✅ O/X 문제 풀이", f"{sel_ox} 개")
+
+    st.write("---")
+    
+    # 📌 최근 등록 판례 (복구 완료)
+    st.subheader("📚 최근 등록 판례 검색")
+    search_query = st.text_input("🔍 Search", placeholder="판례 번호, 제목, 내용 등 통합 검색", label_visibility="collapsed")
+    
+    if not df_all_precedents.empty:
+        display_df = df_all_precedents.copy()
+        if search_query:
+            mask = display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
+            display_df = display_df[mask]
+        
+        display_df = display_df.sort_values(by='id', ascending=False)
+        display_df = display_df.rename(columns={"main_cat": "과목", "p_number": "판례번호", "p_title": "제목", "p_grade": "중요도", "read_count": "회독수"})
+        display_df = display_df[["과목", "판례번호", "제목", "중요도", "회독수", "p_tags"]]
+        
+        if not search_query: 
+            display_df = display_df.head(20)
+            st.caption("최근 등록된 판례 최대 20개를 보여줍니다. 전체 판례는 판례집 메뉴를 이용하세요.")
+            
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("등록된 판례가 없습니다.")
 
 
-# --- 신규: 🏷️ 태그 모아보기 ---
+# --- 🏷️ 태그 모아보기 ---
 elif menu == "🏷️ 태그 모아보기":
     st.title("🏷️ 태그 모아보기")
     st.markdown("등록된 태그를 기반으로 헌법과 행정법 판례를 가리지 않고 한눈에 모아볼 수 있습니다.")
@@ -300,7 +398,6 @@ elif menu == "🏷️ 태그 모아보기":
     if df_all_precedents.empty:
         st.info("아직 등록된 판례가 없습니다.")
     else:
-        # 1. 모든 태그 수집 및 빈도 분석
         all_tags = []
         for tags_str in df_all_precedents['p_tags'].dropna():
             if str(tags_str).strip():
@@ -312,7 +409,6 @@ elif menu == "🏷️ 태그 모아보기":
         else:
             tag_counts = pd.Series(all_tags).value_counts()
             
-            # 2. 인기 태그 UI 
             st.markdown("##### 🔥 자주 사용하는 인기 태그")
             top_tags = tag_counts.head(10)
             tag_html = ""
@@ -321,7 +417,6 @@ elif menu == "🏷️ 태그 모아보기":
             st.markdown(tag_html, unsafe_allow_html=True)
             st.write("")
             
-            # 3. 태그 검색 기능 (다중 선택 가능)
             st.markdown("##### 🔍 태그로 판례 찾기")
             selected_tags = st.multiselect("원하는 태그를 선택하세요", list(tag_counts.index), placeholder="여기를 눌러 태그 선택")
             
@@ -329,13 +424,12 @@ elif menu == "🏷️ 태그 모아보기":
                 st.write("---")
                 st.markdown(f"**선택한 태그:** {', '.join(selected_tags)}")
                 
-                # 교집합 필터링 (선택한 태그가 모두 포함된 판례만 검색)
                 def check_tags(x):
                     p_tags = [t.strip() for t in str(x).split(',') if str(x).strip()]
                     return all(tag in p_tags for tag in selected_tags)
                     
                 mask = df_all_precedents['p_tags'].apply(check_tags)
-                filtered_df = df_all_precedents[mask].sort_values(by='p_grade', ascending=True) # S등급부터 
+                filtered_df = df_all_precedents[mask].sort_values(by='p_grade', ascending=True)
                 
                 if filtered_df.empty:
                     st.warning("해당 태그들이 모두 포함된 판례가 없습니다.")
@@ -345,11 +439,9 @@ elif menu == "🏷️ 태그 모아보기":
                         grade_mark = f"⭐ {p.get('p_grade', 'C')}"
                         subject_mark = f"[{p.get('main_cat')}]"
                         with st.expander(f"{subject_mark} {grade_mark} {p.get('p_number', '')} {p.get('p_title', '')}"):
-                            # 태그 뱃지 UI 적용
                             tags_badge = "".join([f"<span class='tag-badge'>#{t.strip()}</span>" for t in str(p.get('p_tags', '')).split(',') if t.strip()])
                             st.markdown(tags_badge, unsafe_allow_html=True)
                             st.write("")
-                            
                             st.markdown(f"**카테고리:** {p['main_cat']} > {p['mid_cat']} > {p['sub_cat']}")
                             if p.get('p_related'): st.markdown(f"**🔗 연관 조문:** {p['p_related']}")
                             st.write("---")
@@ -503,12 +595,10 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
         if not df.empty:
             df_subj = df[df['main_cat'] == subject]
             if not df_subj.empty:
-                # ⚖️ 중요도에 따른 가중치(확률) 부여 로직 (5 : 3 : 2 비율)
                 def assign_weight(grade):
                     if grade in ['S', 'A+']: return 5
                     elif grade in ['A', 'B+', 'B']: return 3
                     else: return 2
-                
                 weights = df_subj['p_grade'].apply(assign_weight)
                 st.session_state[f'random_p_{subject}'] = df_subj.sample(1, weights=weights).iloc[0].to_dict()
                 st.session_state[f'read_done_{subject}'] = False
@@ -550,7 +640,7 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
                     current_rc = int(df_update.loc[idx[0], "read_count"])
                     df_update.loc[idx[0], "read_count"] = current_rc + 1
                     save_precedents_df(df_update)
-                    log_activity('read') # 통계 로그
+                    log_activity('read') # 통계 기록
                     
                     st.session_state[f'random_p_{subject}']['read_count'] = current_rc + 1
                     st.session_state[f'read_done_{subject}'] = True
@@ -633,13 +723,13 @@ elif menu == "✅ O/X 문제풀기":
             if st.button("⭕ 맞다 (O)", use_container_width=True, disabled=st.session_state.ox_answered):
                 st.session_state.ox_user_answer = 'O'
                 st.session_state.ox_answered = True
-                log_activity('ox')
+                log_activity('ox') # 통계 기록
                 st.rerun()
         with c2:
             if st.button("❌ 틀리다 (X)", use_container_width=True, disabled=st.session_state.ox_answered):
                 st.session_state.ox_user_answer = 'X'
                 st.session_state.ox_answered = True
-                log_activity('ox')
+                log_activity('ox') # 통계 기록
                 st.rerun()
                 
         if st.session_state.ox_answered:
@@ -723,7 +813,6 @@ elif menu == "✍️ 판례 등록":
             p_number = st.text_input("📌 판례 번호")
             p_title = st.text_input("📝 판례 제목")
             
-            # 📌 누락되었던 폼 복구 완료
             col_loc, col_rel = st.columns(2)
             with col_loc: p_location = st.text_input("📖 교재 수록 위치")
             with col_rel: p_related = st.text_input("🔗 연관 판례 및 조문")
@@ -743,6 +832,7 @@ elif menu == "✍️ 판례 등록":
                     new_row = pd.DataFrame([{"id": new_id, "main_cat": reg_main, "mid_cat": reg_mid, "sub_cat": reg_sub, "p_number": p_number, "p_title": p_title, "p_content": p_content, "p_tags": cleaned_tags, "p_location": p_location, "p_related": p_related, "p_exams": sort_exams_desc(p_exams), "reg_date": reg_date, "p_desc": p_desc, "p_grade": p_grade, "p_result": p_result, "read_count": 0}])
                     df = pd.concat([df, new_row], ignore_index=True)
                     save_precedents_df(df)
+                    log_activity('reg') # 통계 기록
                     st.success("✅ 저장 완료!")
                 else:
                     st.error("판례 번호와 제목을 입력하세요.")
@@ -767,6 +857,7 @@ elif menu == "✍️ 지문 등록":
                 new_row = pd.DataFrame([{"id": new_id, "subject": pas_main, "passage_text": pas_text, "source": pas_source, "is_true": pas_is_true, "explanation": pas_desc, "reg_date": reg_date}])
                 df_pas = pd.concat([df_pas, new_row], ignore_index=True)
                 save_passages_df(df_pas)
+                log_activity('reg') # 통계 기록
                 st.success("✅ 기출 지문이 저장되었습니다!")
             else:
                 st.error("지문 내용을 입력해주세요.")
