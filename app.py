@@ -103,7 +103,7 @@ def save_passages_df(df):
     ws.update(values=data, range_name="A1")
     load_passages_df.clear()
 
-# 📌 일일 학습 통계 데이터 (신규)
+# 📌 일일 학습 통계 데이터
 @st.cache_data(ttl=60)
 def load_activity_log():
     try:
@@ -126,17 +126,12 @@ def save_activity_log(df):
 def log_activity(activity_type):
     today = datetime.datetime.now().strftime("%Y-%m-%d")
     df = load_activity_log()
-    
     if df.empty or today not in df['date'].values:
         new_row = pd.DataFrame([{"date": today, "read_count": 0, "ox_count": 0}])
         df = pd.concat([df, new_row], ignore_index=True)
-
     idx = df[df['date'] == today].index[0]
-    if activity_type == 'read':
-        df.loc[idx, "read_count"] = int(df.loc[idx, "read_count"]) + 1
-    elif activity_type == 'ox':
-        df.loc[idx, "ox_count"] = int(df.loc[idx, "ox_count"]) + 1
-        
+    if activity_type == 'read': df.loc[idx, "read_count"] = int(df.loc[idx, "read_count"]) + 1
+    elif activity_type == 'ox': df.loc[idx, "ox_count"] = int(df.loc[idx, "ox_count"]) + 1
     save_activity_log(df)
 
 # 📌 카테고리 데이터
@@ -200,6 +195,8 @@ st.markdown("""
     div[data-testid="metric-container"] { background-color: #f8f9fa; border: 1px solid #e9ecef; padding: 15px; border-radius: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
     hr.thin-line { border: 0; border-top: 1px solid #e0e0e0; margin: 5px 0 5px 0; }
     .stButton > button { height: 40px; }
+    .tag-badge { background-color: #e9ecef; color: #495057; padding: 4px 10px; border-radius: 15px; font-size: 13px; font-weight: 500; margin-right: 5px; display: inline-block; }
+    .tag-badge-s { background-color: #ffe3e3; color: #c92a2a; padding: 4px 10px; border-radius: 15px; font-size: 13px; font-weight: 500; margin-right: 5px; display: inline-block; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -214,7 +211,8 @@ with st.sidebar:
     menu_options = [
         "📊 홈 (대시보드)", 
         "🏛️ 헌법 판례집", 
-        "⚖️ 행정법 판례집", 
+        "⚖️ 행정법 판례집",
+        "🏷️ 태그 모아보기",
         "🎲 헌법 랜덤 복습", 
         "🎲 행정법 랜덤 복습", 
         "📝 헌법 지문 복습", 
@@ -233,7 +231,6 @@ with st.sidebar:
 # --- 1. 홈 (대시보드) ---
 if menu == "📊 홈 (대시보드)":
     st.title("⚖️ 공판집 - 공무원 시험 판례 모음집")
-    st.markdown("목표 달성을 위한 판례 및 지문 회독을 시작해 보세요. 응원합니다!")
     st.write("")
     
     if not df_all_precedents.empty:
@@ -254,7 +251,6 @@ if menu == "📊 홈 (대시보드)":
         st.metric("⚖️ 행정법 판례", f"{admin_total} 개")
         st.button("행정법 판례집 ➡️", key="go_admin", on_click=change_menu, args=("⚖️ 행정법 판례집",), use_container_width=True)
     
-    # 📌 신규 기능: 일일 학습 통계 대시보드
     df_log = load_activity_log()
     st.write("---")
     st.subheader("🔥 나의 학습 진행도")
@@ -267,7 +263,6 @@ if menu == "📊 홈 (대시보드)":
             today_read = int(df_log[df_log['date'] == today_str]['read_count'].iloc[0])
             today_ox = int(df_log[df_log['date'] == today_str]['ox_count'].iloc[0])
             
-        # 연속 학습일(Streak) 계산 로직
         df_log['date_obj'] = pd.to_datetime(df_log['date']).dt.date
         dates_sorted = sorted(df_log['date_obj'].unique(), reverse=True)
         today_date = datetime.datetime.now().date()
@@ -288,33 +283,78 @@ if menu == "📊 홈 (대시보드)":
     sc2.metric("📖 오늘 판례 회독", f"{today_read} 번")
     sc3.metric("✅ 오늘 O/X 풀이", f"{today_ox} 개")
     
-    # 최근 7일 학습 그래프
     if not df_log.empty and len(df_log) > 0:
         df_chart = df_log.copy()
         df_chart['date_str'] = pd.to_datetime(df_chart['date']).dt.strftime('%m/%d')
         df_chart = df_chart.tail(7).set_index('date_str')
         df_chart = df_chart.rename(columns={'read_count': '판례 회독', 'ox_count': 'O/X 풀이'})
         st.bar_chart(df_chart[['판례 회독', 'O/X 풀이']])
-    else:
-        st.info("오늘부터 퀴즈를 풀거나 판례를 회독하면 통계 그래프가 나타납니다!")
 
+
+# --- 신규: 🏷️ 태그 모아보기 ---
+elif menu == "🏷️ 태그 모아보기":
+    st.title("🏷️ 태그 모아보기")
+    st.markdown("등록된 태그를 기반으로 헌법과 행정법 판례를 가리지 않고 한눈에 모아볼 수 있습니다.")
     st.write("---")
-    search_query = st.text_input("🔍 Search", placeholder="판례 번호, 제목, 내용 통합 검색", label_visibility="collapsed")
     
-    if not df_all_precedents.empty:
-        display_df = df_all_precedents.copy()
-        if search_query:
-            mask = display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
-            display_df = display_df[mask]
-        
-        display_df = display_df.sort_values(by='id', ascending=False)
-        display_df = display_df.rename(columns={"main_cat": "과목", "p_number": "판례번호", "p_title": "제목", "p_grade": "중요도", "read_count": "회독수"})
-        display_df = display_df[["과목", "판례번호", "제목", "중요도", "회독수", "p_tags"]]
-        
-        if not search_query: display_df = display_df.head(20)
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+    if df_all_precedents.empty:
+        st.info("아직 등록된 판례가 없습니다.")
     else:
-        st.info("등록된 판례가 없습니다.")
+        # 1. 모든 태그 수집 및 빈도 분석
+        all_tags = []
+        for tags_str in df_all_precedents['p_tags'].dropna():
+            if str(tags_str).strip():
+                tags = [t.strip() for t in str(tags_str).split(',') if t.strip()]
+                all_tags.extend(tags)
+                
+        if not all_tags:
+            st.info("아직 판례에 등록된 태그가 없습니다. 판례 등록 시 태그를 달아보세요!")
+        else:
+            tag_counts = pd.Series(all_tags).value_counts()
+            
+            # 2. 인기 태그 UI 
+            st.markdown("##### 🔥 자주 사용하는 인기 태그")
+            top_tags = tag_counts.head(10)
+            tag_html = ""
+            for tag, count in top_tags.items():
+                tag_html += f"<span class='tag-badge-s'>#{tag} ({count})</span>"
+            st.markdown(tag_html, unsafe_allow_html=True)
+            st.write("")
+            
+            # 3. 태그 검색 기능 (다중 선택 가능)
+            st.markdown("##### 🔍 태그로 판례 찾기")
+            selected_tags = st.multiselect("원하는 태그를 선택하세요", list(tag_counts.index), placeholder="여기를 눌러 태그 선택")
+            
+            if selected_tags:
+                st.write("---")
+                st.markdown(f"**선택한 태그:** {', '.join(selected_tags)}")
+                
+                # 교집합 필터링 (선택한 태그가 모두 포함된 판례만 검색)
+                def check_tags(x):
+                    p_tags = [t.strip() for t in str(x).split(',') if str(x).strip()]
+                    return all(tag in p_tags for tag in selected_tags)
+                    
+                mask = df_all_precedents['p_tags'].apply(check_tags)
+                filtered_df = df_all_precedents[mask].sort_values(by='p_grade', ascending=True) # S등급부터 
+                
+                if filtered_df.empty:
+                    st.warning("해당 태그들이 모두 포함된 판례가 없습니다.")
+                else:
+                    st.success(f"총 {len(filtered_df)}개의 판례가 검색되었습니다.")
+                    for p in filtered_df.to_dict('records'):
+                        grade_mark = f"⭐ {p.get('p_grade', 'C')}"
+                        subject_mark = f"[{p.get('main_cat')}]"
+                        with st.expander(f"{subject_mark} {grade_mark} {p.get('p_number', '')} {p.get('p_title', '')}"):
+                            # 태그 뱃지 UI 적용
+                            tags_badge = "".join([f"<span class='tag-badge'>#{t.strip()}</span>" for t in str(p.get('p_tags', '')).split(',') if t.strip()])
+                            st.markdown(tags_badge, unsafe_allow_html=True)
+                            st.write("")
+                            
+                            st.markdown(f"**카테고리:** {p['main_cat']} > {p['mid_cat']} > {p['sub_cat']}")
+                            if p.get('p_related'): st.markdown(f"**🔗 연관 조문:** {p['p_related']}")
+                            st.write("---")
+                            st.info(p.get('p_desc', '설명이 없습니다.'))
+                            st.caption(f"📝 요지: {str(p.get('p_content', ''))[:100]}...")
 
 
 # --- 2. 과목별 판례집 ---
@@ -387,7 +427,9 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                     st.markdown(f"**카테고리:** {p['main_cat']} > {p['mid_cat']} > {p['sub_cat']}")
                     if p.get('p_location'): st.markdown(f"**📖 교재 수록 위치:** {p['p_location']}")
                     if p.get('p_related'): st.markdown(f"**🔗 연관 판례 및 조문:** {p['p_related']}")
-                    if p.get('p_tags'): st.markdown(f"**🏷️ 태그:** `{p['p_tags']}`")
+                    if p.get('p_tags'): 
+                        tags_html = "".join([f"<span class='tag-badge'>#{t.strip()}</span>" for t in str(p['p_tags']).split(',') if t.strip()])
+                        st.markdown(f"**🏷️ 태그:** {tags_html}", unsafe_allow_html=True)
                     
                     st.write("---")
                     st.write("**💡 판례 설명 (해설)**")
@@ -406,12 +448,15 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                         with c1:
                             e_grade = st.selectbox("⭐ 중요도", ["S", "A+", "A", "B+", "B", "C+", "C"], index=["S", "A+", "A", "B+", "B", "C+", "C"].index(p.get('p_grade', 'C')))
                             e_number = st.text_input("📌 판례 번호", str(p.get('p_number', '')))
+                            e_loc = st.text_input("📖 교재 수록 위치", str(p.get('p_location', '')))
                         with c2:
                             e_title = st.text_input("📝 판례 제목", str(p.get('p_title', '')))
                             e_rel = st.text_input("🔗 연관 판례 및 조문", str(p.get('p_related', '')))
+                            e_tags = st.text_input("🏷️ 태그 (쉼표 구분)", str(p.get('p_tags', '')))
                         
                         e_desc = st.text_area("💡 판례 설명", str(p.get('p_desc', '')), height=100)
                         e_content = st.text_area("📄 판례 요지", str(p.get('p_content', '')), height=150)
+                        e_exams = st.text_area("🏆 시험 출제 내역", str(p.get('p_exams', '')), height=100)
                         
                         if st.form_submit_button("수정 저장", use_container_width=True):
                             df_update = load_precedents_df()
@@ -420,9 +465,12 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                                 df_update.loc[idx[0], "p_grade"] = e_grade
                                 df_update.loc[idx[0], "p_number"] = e_number
                                 df_update.loc[idx[0], "p_title"] = e_title
+                                df_update.loc[idx[0], "p_location"] = e_loc
                                 df_update.loc[idx[0], "p_related"] = e_rel
+                                df_update.loc[idx[0], "p_tags"] = e_tags
                                 df_update.loc[idx[0], "p_desc"] = e_desc
                                 df_update.loc[idx[0], "p_content"] = e_content
+                                df_update.loc[idx[0], "p_exams"] = sort_exams_desc(e_exams)
                                 save_precedents_df(df_update)
                                 st.success("✅ 수정 완료!")
                                 st.rerun()
@@ -443,11 +491,11 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                     st.rerun()
 
 
-# --- 3. 랜덤 복습 기능 (판례) ---
+# --- 3. 가중치 랜덤 복습 기능 (판례) ---
 elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
     subject = "헌법" if "헌법" in menu else "행정법"
     st.title(f"🎲 {subject} 랜덤 복습")
-    st.markdown(f"등록된 **{subject} 판례** 중 하나를 무작위로 불러옵니다. 핵심 내용을 먼저 떠올려 보세요!")
+    st.markdown(f"등록된 **{subject} 판례** 중 핵심 판례 위주로 무작위 출제됩니다. 내용을 먼저 떠올려 보세요!")
     st.write("---")
     
     if st.button("🔄 새로운 판례 불러오기", use_container_width=True):
@@ -455,7 +503,14 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
         if not df.empty:
             df_subj = df[df['main_cat'] == subject]
             if not df_subj.empty:
-                st.session_state[f'random_p_{subject}'] = df_subj.sample(1).iloc[0].to_dict()
+                # ⚖️ 중요도에 따른 가중치(확률) 부여 로직 (5 : 3 : 2 비율)
+                def assign_weight(grade):
+                    if grade in ['S', 'A+']: return 5
+                    elif grade in ['A', 'B+', 'B']: return 3
+                    else: return 2
+                
+                weights = df_subj['p_grade'].apply(assign_weight)
+                st.session_state[f'random_p_{subject}'] = df_subj.sample(1, weights=weights).iloc[0].to_dict()
                 st.session_state[f'read_done_{subject}'] = False
             else:
                 st.session_state[f'random_p_{subject}'] = None
@@ -472,7 +527,10 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
         
         st.subheader(f"{grade_mark} {p.get('p_number', '')} {p.get('p_title', '')} {read_badge}")
         st.markdown(f"**카테고리:** {p['main_cat']} > {p['mid_cat']} > {p['sub_cat']}")
-        
+        if p.get('p_tags'): 
+            tags_html = "".join([f"<span class='tag-badge'>#{t.strip()}</span>" for t in str(p['p_tags']).split(',') if t.strip()])
+            st.markdown(f"**🏷️ 태그:** {tags_html}", unsafe_allow_html=True)
+            
         st.write("")
         with st.expander("💡 판결 결과 및 내용 확인하기 (클릭)"):
             if subject == '헌법' and p.get('p_result'): st.markdown(f"### ⚖️ 판결 결과: [{p.get('p_result')}]")
@@ -486,16 +544,13 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("✔️ 회독 완료", use_container_width=True, disabled=st.session_state.get(f'read_done_{subject}', False)):
-                # 회독수 올리기
                 df_update = load_precedents_df()
                 idx = df_update[df_update['id'].astype(str) == str(p['id'])].index
                 if not idx.empty:
                     current_rc = int(df_update.loc[idx[0], "read_count"])
                     df_update.loc[idx[0], "read_count"] = current_rc + 1
                     save_precedents_df(df_update)
-                    
-                    # 📌 통계 로그 남기기
-                    log_activity('read')
+                    log_activity('read') # 통계 로그
                     
                     st.session_state[f'random_p_{subject}']['read_count'] = current_rc + 1
                     st.session_state[f'read_done_{subject}'] = True
@@ -504,7 +559,12 @@ elif menu in ["🎲 헌법 랜덤 복습", "🎲 행정법 랜덤 복습"]:
             if st.button("⏭️ 다음 판례", use_container_width=True, type="primary"):
                 df_subj = load_precedents_df()[load_precedents_df()['main_cat'] == subject]
                 if not df_subj.empty:
-                    st.session_state[f'random_p_{subject}'] = df_subj.sample(1).iloc[0].to_dict()
+                    def assign_weight(grade):
+                        if grade in ['S', 'A+']: return 5
+                        elif grade in ['A', 'B+', 'B']: return 3
+                        else: return 2
+                    weights = df_subj['p_grade'].apply(assign_weight)
+                    st.session_state[f'random_p_{subject}'] = df_subj.sample(1, weights=weights).iloc[0].to_dict()
                     st.session_state[f'read_done_{subject}'] = False
                 st.rerun()
 
@@ -573,13 +633,13 @@ elif menu == "✅ O/X 문제풀기":
             if st.button("⭕ 맞다 (O)", use_container_width=True, disabled=st.session_state.ox_answered):
                 st.session_state.ox_user_answer = 'O'
                 st.session_state.ox_answered = True
-                log_activity('ox') # 📌 통계 로그 남기기
+                log_activity('ox')
                 st.rerun()
         with c2:
             if st.button("❌ 틀리다 (X)", use_container_width=True, disabled=st.session_state.ox_answered):
                 st.session_state.ox_user_answer = 'X'
                 st.session_state.ox_answered = True
-                log_activity('ox') # 📌 통계 로그 남기기
+                log_activity('ox')
                 st.rerun()
                 
         if st.session_state.ox_answered:
@@ -662,15 +722,25 @@ elif menu == "✍️ 판례 등록":
             
             p_number = st.text_input("📌 판례 번호")
             p_title = st.text_input("📝 판례 제목")
+            
+            # 📌 누락되었던 폼 복구 완료
+            col_loc, col_rel = st.columns(2)
+            with col_loc: p_location = st.text_input("📖 교재 수록 위치")
+            with col_rel: p_related = st.text_input("🔗 연관 판례 및 조문")
+            
             p_content = st.text_area("📄 판례 요지 및 내용 (원문)", height=150)
             p_desc = st.text_area("💡 판례 설명 (나만의 쉬운 해설)", height=100)
+            p_tags = st.text_input("🏷️ 태그 (쉼표로 구분)")
+            p_exams = st.text_area("🏆 시험 출제 내역 (엔터키로 구분)", height=100)
             
             if st.form_submit_button("저장", use_container_width=True):
                 if p_number and p_title:
                     reg_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    cleaned_tags = ", ".join([tag.strip() for tag in p_tags.split(",") if tag.strip()])
                     df = load_precedents_df()
                     new_id = int(df['id'].max()) + 1 if not df.empty else 1
-                    new_row = pd.DataFrame([{"id": new_id, "main_cat": reg_main, "mid_cat": reg_mid, "sub_cat": reg_sub, "p_number": p_number, "p_title": p_title, "p_content": p_content, "reg_date": reg_date, "p_desc": p_desc, "p_grade": p_grade, "read_count": 0}])
+                    
+                    new_row = pd.DataFrame([{"id": new_id, "main_cat": reg_main, "mid_cat": reg_mid, "sub_cat": reg_sub, "p_number": p_number, "p_title": p_title, "p_content": p_content, "p_tags": cleaned_tags, "p_location": p_location, "p_related": p_related, "p_exams": sort_exams_desc(p_exams), "reg_date": reg_date, "p_desc": p_desc, "p_grade": p_grade, "p_result": p_result, "read_count": 0}])
                     df = pd.concat([df, new_row], ignore_index=True)
                     save_precedents_df(df)
                     st.success("✅ 저장 완료!")
