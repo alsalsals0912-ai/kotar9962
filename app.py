@@ -200,7 +200,6 @@ st.markdown("""
     hr.thin-line { border: 0; border-top: 1px solid #e0e0e0; margin: 5px 0 5px 0; }
     .tag-badge { background-color: #e9ecef; color: #495057; padding: 4px 10px; border-radius: 15px; font-size: 13px; font-weight: 500; margin-right: 5px; display: inline-block; }
     .tag-badge-s { background-color: #ffe3e3; color: #c92a2a; padding: 4px 10px; border-radius: 15px; font-size: 13px; font-weight: 500; margin-right: 5px; display: inline-block; }
-    /* 다홍색 캘린더 버튼을 위한 스타일 (Primary button) */
     div.stButton > button[kind="primary"] { background-color: #FF7F50; border-color: #FF7F50; color: white; }
     div.stButton > button[kind="primary"]:hover { background-color: #FF6347; border-color: #FF6347; }
     </style>
@@ -282,7 +281,7 @@ if menu == "📊 홈 (대시보드)":
     
     st.write("---")
     
-    # 📌 최근 등록 판례 (위로 이동)
+    # 📌 최근 등록 판례
     st.subheader("📚 최근 등록 판례 검색")
     search_query = st.text_input("🔍 Search", placeholder="판례 번호, 제목, 내용 등 통합 검색", label_visibility="collapsed")
     
@@ -306,7 +305,7 @@ if menu == "📊 홈 (대시보드)":
 
     st.write("---")
 
-    # 📌 다홍색 달력 (아래로 이동)
+    # 📌 캘린더 대시보드
     if streak > 0:
         st.markdown(f"### 📅 나의 학습 달력 <span style='color: #FF7F50; font-size: 0.7em; margin-left: 10px;'>🔥 {streak}일 연속 학습 완료!</span>", unsafe_allow_html=True)
     else:
@@ -336,7 +335,6 @@ if menu == "📊 홈 (대시보드)":
                 st.session_state.cal_month += 1
             st.rerun()
 
-    # 달력 그리기 (일요일 시작)
     cal = calendar.Calendar(firstweekday=6)
     month_cal = cal.monthdayscalendar(st.session_state.cal_year, st.session_state.cal_month)
     weekdays = ["일", "월", "화", "수", "목", "금", "토"]
@@ -359,14 +357,12 @@ if menu == "📊 홈 (대시보드)":
                     if int(log_row.get('read_count', 0)) > 0 or int(log_row.get('ox_count', 0)) > 0 or int(log_row.get('reg_count', 0)) > 0:
                         has_activity = True
                 
-                # 활동이 있으면 다홍색(primary), 없으면 회색(secondary)
                 btn_type = "primary" if has_activity else "secondary"
                 
                 if cols[i].button(str(day), key=f"cal_{curr_date_str}", type=btn_type, use_container_width=True):
                     st.session_state.sel_date = datetime.date(st.session_state.cal_year, st.session_state.cal_month, day)
                     st.rerun()
 
-    # 📌 선택한 날짜 상세 기록
     st.write("")
     sel_date_str = st.session_state.sel_date.strftime("%Y-%m-%d")
     st.markdown(f"#### 🔍 {st.session_state.sel_date.strftime('%Y년 %m월 %d일')} 상세 기록")
@@ -530,6 +526,25 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                             if exam.strip(): st.markdown(f"- {exam}")
                     
                 with tab_edit:
+                    # 📌 복구된 카테고리 수정 기능
+                    c_cat1, c_cat2, c_cat3 = st.columns(3)
+                    with c_cat1:
+                        e_main = st.selectbox("대분류", ["헌법", "행정법"], index=0 if p['main_cat'] == "헌법" else 1, key=f"e_main_{p['id']}")
+                    
+                    mid_opts = list(categories.get(e_main, {}).keys())
+                    current_mid = p['mid_cat'] if p['mid_cat'] in mid_opts else (mid_opts[0] if mid_opts else "목차 없음")
+                    mid_idx = mid_opts.index(current_mid) if current_mid in mid_opts else 0
+                    
+                    with c_cat2:
+                        e_mid = st.selectbox("목차", mid_opts if mid_opts else ["목차 없음"], index=mid_idx, key=f"e_mid_{p['id']}")
+                        
+                    sub_opts = categories.get(e_main, {}).get(e_mid, []) if e_mid != "목차 없음" else []
+                    current_sub = p['sub_cat'] if p['sub_cat'] in sub_opts else (sub_opts[0] if sub_opts else "소분류 없음")
+                    sub_idx = sub_opts.index(current_sub) if current_sub in sub_opts else 0
+                    
+                    with c_cat3:
+                        e_sub = st.selectbox("소분류", sub_opts if sub_opts else ["소분류 없음"], index=sub_idx, key=f"e_sub_{p['id']}")
+
                     with st.form(f"edit_form_{p['id']}"):
                         c1, c2 = st.columns(2)
                         with c1:
@@ -549,6 +564,9 @@ elif menu in ["🏛️ 헌법 판례집", "⚖️ 행정법 판례집"]:
                             df_update = load_precedents_df()
                             idx = df_update[df_update['id'].astype(str) == str(p['id'])].index
                             if not idx.empty:
+                                df_update.loc[idx[0], "main_cat"] = e_main
+                                df_update.loc[idx[0], "mid_cat"] = e_mid
+                                df_update.loc[idx[0], "sub_cat"] = e_sub
                                 df_update.loc[idx[0], "p_grade"] = e_grade
                                 df_update.loc[idx[0], "p_number"] = e_number
                                 df_update.loc[idx[0], "p_title"] = e_title
